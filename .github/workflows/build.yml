@@ -1,0 +1,209 @@
+name: build
+
+# On every push and pull request, and startable by hand from the Actions tab.
+# No branch filter on purpose: this repository's branch names are not what the
+# build depends on, and a workflow pinned to one name stops running the day the
+# branch is renamed.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Two jobs, one per platform. They are NOT a matrix: the Windows toolchain and
+# the link step differ enough that a matrix would spend most of its lines on
+# conditionals, and a reader would have to reconstruct two builds from one.
+jobs:
+  linux:
+    name: Linux (gnuLinux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # This interpreter only RUNS src/makefile.py. The Python the build
+          # ships is the standalone CPython the makefile downloads itself, so
+          # this version decides nothing about the artifact.
+          python-version: '3.12'
+
+      # The download of Lua, CPython, Raylib and FreeFont lands under
+      # _temp/<os>/ and is the slow part of the build. Cached across runs so a
+      # push that only touches C sources does not re-fetch all of it. The key is
+      # versioned: bump -v1 to -v2 to force a clean fetch when the pinned
+      # "latest" of one of them needs to move.
+      - name: Cache the downloaded dependencies
+        uses: actions/cache@v4
+        with:
+          path: _temp/gnuLinux
+          key: ${{ runner.os }}-gcl-deps-v1
+
+      # The makefile installs these itself, probing for each header first. They
+      # are named here as well so the dependency set is in the log, and so the
+      # build spends its time compiling instead of probing-then-apt-installing.
+      - name: Install the X11/OpenGL development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config git \
+            libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            libxi-dev libxext-dev libgl1-mesa-dev
+
+      # The sources sit directly under src/, but the makefile names them under
+      # _SRC/ - a leftover from when this tree lived inside the GnuchanOS
+      # repository - and FILTERS OUT every source it cannot find. Without this
+      # link gcc is handed an empty file list. GnuChanPrograms.sh creates the
+      # same link when it builds the ISO.
+      - name: Point src/_SRC at the sources
+        run: ln -sfn . src/_SRC
+
+      # The default target: build, then the headless test layers. The gcsf,
+      # ptest and ctest suites read language/tests/ and language/_SRC/, which
+      # this repository does not carry, so run_test_suite reports "test skipped"
+      # and returns success - the BUILD itself is the pass/fail signal here.
+      - name: Build
+        run: python3 src/makefile.py
+
+      # os_name() renames "linux" to "gnuLinux", so the output is under
+      # _temp/language-build/gnuLinux/: gcl, Library/ with every module,
+      # Programs/ide and Assets/.
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcl-linux
+          path: _temp/language-build/gnuLinux/
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The Windows build is a MinGW one. gcc, mingw32-make, dlltool, windres
+      # and gendef all come from here. gendef is the one to watch: the makefile
+      # runs it to derive Library/libraylib.a from the Raylib.dll it has just
+      # built, and every module linked through that import library fails without
+      # it. It ships in the tools package below.
+      - name: Install MinGW-w64 (gcc, mingw32-make, dlltool, gendef)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-tools-git
+          # Deliberately NO msys2 python. The build must run under the native
+          # Windows interpreter from setup-python: src/makefile.py asks
+          # platform.system() what it is building for, and only a native
+          # interpreter answers "Windows". An MSYS one would answer "MSYS_NT".
+
+      # setup-msys2 keeps its bin directory inside the MSYS2 shell, but this job
+      # runs from the runner's own shell, so the toolchain has to be put on the
+      # runner's PATH by hand or gcc and mingw32-make are "not found".
+      - name: Put the MinGW toolchain on PATH
+        run: echo "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Cache the downloaded dependencies
+        uses: actions/cache@v4
+        with:
+          path: _temp/windows
+          key: ${{ runner.os }}-gcl-deps-v1
+
+      # Same _SRC link as on Linux, but a directory junction rather than a
+      # symlink: a junction is the one link type Windows makes without the
+      # symlink privilege (or Developer Mode) and needs no elevation on a
+      # hosted runner.
+      - name: Point src\_SRC at the sources
+        run: cmd /c mklink /J "$PWD\src\_SRC" "$PWD\src"
+
+      - name: Build
+        run: python src\makefile.py
+
+      # os_name() is "windows" here, straight from platform.system().lower().
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcl-windows
+          path: _temp/language-build/windows/
+          if-no-files-found: error
+
+  release:
+    name: Release
+    # Only after BOTH builds succeeded. A release with one platform in it is
+    # worse than no release: the Linux tree would be published while the
+    # Windows build is still red, and the release would look like it covered
+    # both.
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    # Publishing needs write access to the repository. The default token is
+    # read-only in some repositories, so it is asked for explicitly, and it is
+    # scoped to this job rather than given to the whole workflow.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version lives in version.txt at the repository root, and that file
+      # is the ONLY place it is written by hand. Bump it and push, and this job
+      # publishes a release; push again without touching it and the release
+      # already exists, so nothing new goes out.
+      - name: Read version.txt
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < version.txt)"
+          if [ -z "$version" ]; then
+            echo "version.txt is empty - nothing to release" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download the build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # upload-artifact stores a whole tree, so these arrive as directories.
+      # They are packaged here so the release carries two full trees, one per
+      # platform, under names that say which is which.
+      - name: Package the artifacts
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          ( cd artifacts/gcl-linux   && zip -qr "$GITHUB_WORKSPACE/gcl-linux-$version.zip"   . )
+          ( cd artifacts/gcl-windows && zip -qr "$GITHUB_WORKSPACE/gcl-windows-$version.zip" . )
+
+      # Whether this version has already been published. gh is on the runner;
+      # a version that already has a release is a no-op, not an error.
+      - name: Check whether the release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The version is not baked into any file yet, so publish only when it is
+      # new. Re-pushing the same version leaves the existing release alone
+      # rather than fighting it.
+      - name: Publish the release
+        if: steps.check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: GCL ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            gcl-linux-${{ steps.version.outputs.version }}.zip
+            gcl-windows-${{ steps.version.outputs.version }}.zip

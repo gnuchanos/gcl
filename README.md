@@ -985,8 +985,71 @@ see it: the sources really sit directly under `src/`, but the makefile still
 refers to them as `_SRC/...` — a leftover from when this tree lived inside the
 GnuchanOS repository. A single relative symlink, `src/_SRC -> .`, makes every
 one of those paths resolve to the sources beside it. `GnuChanPrograms.sh` in the
-GnuchanOS repository creates that link before building; if you build by hand
-from a fresh clone, create it yourself.
+GnuchanOS repository creates that link before building, and so does the CI
+workflow; if you build by hand from a fresh clone, create it yourself:
+
+```
+ln -sfn . src/_SRC            # Linux
+mklink /J src\_SRC src        # Windows (cmd), a junction needs no elevation
+```
+
+## Continuous integration
+
+`.github/workflows/build.yml` builds the project on **Linux** and on
+**Windows** on every push and pull request, and can be started by hand from the
+Actions tab. It produces one artifact per platform: the whole output tree —
+`gcl`, `Library/` with every module, `Programs/ide`, `Assets/`.
+
+Two things in it are worth knowing, because they are the things that break a
+build on a fresh machine:
+
+- **The `src/_SRC` link above is made in the workflow**, per platform — a
+  symlink on Linux, a junction on Windows.
+- **Windows runs under the native Python**, not an MSYS one, because the
+  makefile asks `platform.system()` what it is building for and only a native
+  interpreter answers `Windows`. The MinGW toolchain (`gcc`, `mingw32-make`,
+  `dlltool`, `gendef`) is put on the runner's PATH by hand, because
+  `msys2/setup-msys2` keeps its `bin` inside the MSYS2 shell.
+
+The workflow caches `_temp/<os>/` — the downloaded Lua, CPython, Raylib and
+FreeFont — so a push that only touches a C source does not re-fetch all of it.
+Bump the `-v1` suffix on the cache key to force a clean fetch.
+
+The headless test layers (`ptest`, `ctest`, `gcsf`) read `language/tests/` and
+`language/_SRC/`, which this repository does not carry, so the build reports
+"test skipped" for each and carries on. The build itself — every module
+compiling and linking — is the pass/fail signal in CI until the test data is
+moved into this repository.
+
+## Releasing
+
+The version lives in **`version.txt`** at the repository root, and that file is
+the only place it is written by hand. To publish:
+
+1. Edit `version.txt` — one line, e.g. `0.2.0`.
+2. Commit and push.
+
+That is the whole procedure. On the push, both platforms build; when they both
+pass, a `release` job reads `version.txt` and publishes
+[github.com/gnuchanos/gcl/releases](https://github.com/gnuchanos/gcl/releases)
+with the tag `v<version>` (so `version.txt` containing `0.2.0` publishes
+`v0.2.0`), release notes generated from the commits, and two archives — the
+full Linux tree as `gcl-linux-<version>.zip` and the Windows tree as
+`gcl-windows-<version>.zip`.
+
+**A push without a version bump publishes nothing.** The release job checks
+whether `v<version>` already exists and stops if it does, so ordinary pushes
+just build. Only an actual change to `version.txt` produces a release.
+
+A few consequences of that rule, so they are not surprises:
+
+- **The release runs only if both builds pass.** If Windows is red, nothing is
+  published — a release with one platform in it would look like it covered both.
+- **The version is not compared for ordering.** `0.10.0` and `0.9.0` are just
+  different strings; going "back" to an older number is allowed if you type it.
+- **There is no version string in the code yet.** `version.txt` is read by the
+  release job alone. Baking it into the binary (a `--version` flag) is a
+  separate change.
 
 ## Known limitations
 

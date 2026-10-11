@@ -7,6 +7,14 @@
 # build from dirtying the working directory and blocking `git pull`.
 _temp/
 
+# src/_SRC is a build-time link to the sources beside it. The makefile names
+# its sources under _SRC/ (a leftover from when this tree lived inside the
+# GnuchanOS repository) while the files really sit directly under src/, so the
+# build needs `src/_SRC -> .` to resolve them. It is created by
+# GnuChanPrograms.sh, by the CI workflow and by anyone building by hand; it is
+# not source and must not be committed.
+src/_SRC
+
 # A project built with `gcl -build` drops the executable and its bundle in the
 # project's out/ directory; the bundle is a pack of the runtime and the
 # scripts, not something to commit.
