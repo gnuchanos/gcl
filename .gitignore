@@ -1,0 +1,52 @@
+# ── Build output ────────────────────────────────────────────────────────────
+#
+# The build chain (src/makefile.py) writes everything it produces under
+# _temp/ at this repository's root: the compiler output, the downloaded Lua /
+# Python / Raylib / FreeFont trees, and the generated embed sources. None of it
+# is source, and _temp/ is large. Keeping it out of the tree is what stops a
+# build from dirtying the working directory and blocking `git pull`.
+_temp/
+
+# A project built with `gcl -build` drops the executable and its bundle in the
+# project's out/ directory; the bundle is a pack of the runtime and the
+# scripts, not something to commit.
+*.gcBundle
+out/
+
+# ── Compiler output ─────────────────────────────────────────────────────────
+#
+# The makefile keeps its objects under _temp/, but a manual gcc or a tool that
+# does not follow that rule can still leave one behind. There is no blanket
+# `*.so`/`*.dll` here for a reason: the built Lua and Python runtimes carry
+# those extensions and live under _temp/ (ignored above), so the negation is
+# not needed - but a stray object is caught.
+*.o
+*.a
+*.exe
+*.out
+*.obj
+# NOT a blanket `*.obj`: the Wavefront models under examples/ (terrain.obj,
+# water.obj, cube.obj) share that extension and are project CONTENT. Ignoring
+# them kept every model out of the repository, so a fresh clone ran the fps
+# demo with no terrain, water or cube at all. The negations below keep them.
+!**/assets/*.obj
+
+# ── Python embed (downloaded, not source) ───────────────────────────────────
+*.pyd
+*.zip
+*.cat
+*.pth
+
+# ── Python cache ────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+
+# ── OS and editor leftovers ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+nul
