@@ -931,11 +931,13 @@ int gcl_ide_run(const char *path) {
             if (ctrl && IsKeyPressed(KEY_E)) {
                 gcl_settings_panel_open(&ed);
             }
-            /* EXPLORER: Ctrl+Space (Shift+Space eski kisayol olarak KALIR).
-               Ctrl+Space eskiden tamamlamaya bagliydi ve CAKISIYORDU; tamamlama
-               asagida Ctrl+I'ya tasindi. Iki tus da ayni isi yapar, boylece
-               eski aliskanlik bozulmaz. */
-            if (ctrl && IsKeyPressed(KEY_SPACE)) ed.sidebar_visible = !ed.sidebar_visible;
+            /* EXPLORER: Shift+Space.
+
+               Ctrl+Space BURADAN KALDIRILDI. Bir zamanlar Ctrl+Space explorer'i
+               degistiriyordu ve kullanicinin bekledigi TAMAMLAMA penceresini
+               acmiyordu ("ctrl+space explorer penceresini ac kapat yapiyor").
+               Ctrl+Space artik tamamlamaya ait (asagida); explorer yalnizca
+               Shift+Space ile acilir/kapanir. */
             if (shift && IsKeyPressed(KEY_SPACE)) ed.sidebar_visible = !ed.sidebar_visible;
 
             /* CIKTI PANELI: Ctrl+O (Ctrl+J eski kisayol olarak KALIR).
@@ -965,10 +967,14 @@ int gcl_ide_run(const char *path) {
             if (ctrl && IsKeyPressed(KEY_Z)) gcl_ide_buffer_undo(&CUR);
             if (ctrl && IsKeyPressed(KEY_Y)) gcl_ide_buffer_redo(&CUR);
 
-            /* Ctrl+I: TAMAMLAMA PENCERESINI ACMA.
-               Eskiden Ctrl+Space idi; o tus artik explorer'a ait (yukarida).
-               Yetenek kaybolmaz, yalnizca tus degisir. */
-            if (ctrl && IsKeyPressed(KEY_I)) {
+            /* TAMAMLAMA PENCERESI: Ctrl+Space (VE yedek olarak Ctrl+I).
+
+               Ctrl+Space, editorde otomatik tamamlamayi acmak icin BEKLENEN
+               tusdur ("ctrl+space explorer penceresini ac kapat yapiyordu").
+               Bir zamanlar explorer'a baglanmisti; artik tekrar tamamlamaya
+               aittir ve explorer yalnizca Shift+Space ile acilir (yukarida).
+               Ctrl+I, ayni isi yapan eski/yedek kisayol olarak KALIR. */
+            if ((ctrl && IsKeyPressed(KEY_SPACE)) || (ctrl && IsKeyPressed(KEY_I))) {
                 ed.completion_dismissed = 0;
                 editor_show_completion(&ed, 1);
             }

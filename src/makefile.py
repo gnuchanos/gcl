@@ -68,6 +68,26 @@ TEMP_ROOT = REPO_ROOT / "_temp"
 BUILD_ROOT = TEMP_ROOT / "language-build"
 
 
+# Tum C kaynaklari bu betigi barindiran dizinin ALTINDA duz olarak durur
+# (Modules/..., ide/..., include/...). Bu dosyadaki yollar ise kaynak kokunu
+# ayri bir `_SRC/` dizini varsayarak yazilmistir (or. `_SRC/Modules/gcl_math.c`).
+# Bu agacta boyle bir dizin yoktur, bu yuzden derleme su hatayla duruyordu:
+#
+#     cc1.exe: fatal error: _SRC/Modules/gcl_math.c: No such file or directory
+#
+# Onegi TEK bir yerde cozmek, listedeki adlari okunur tutarken agacin gercek
+# duzenine uydurur. source_path() hem gcc'ye verilen argv'de (run) hem de
+# "dosya var mi" kontrollerinde (build_gcl) uygulanir.
+SRC_PREFIX = "_SRC/"
+
+
+def source_path(path: str) -> str:
+    """`_SRC/` onekli bir yol uzerinden bu agactaki gercek yolu dondurur."""
+    if path.startswith(SRC_PREFIX):
+        return path[len(SRC_PREFIX):]
+    return path
+
+
 def os_name() -> str:
     name = platform.system().lower()
     if name == "linux":
@@ -504,7 +524,10 @@ def ensure_linux_dev_deps() -> bool:
 
 
 def run(cmd: list[str], cwd: Path, env: dict | None = None) -> None:
-    print(f"[gcl] {' '.join(str(x) for x in cmd)}", flush=True)
+    # Yollar `_SRC/` onekiyle yazilmistir (bkz. source_path); gercek argv'yi
+    # cevirdikten SONRA bas ki loglanan satir kosan satirin aynisi olsun.
+    cmd = [source_path(str(x)) for x in cmd]
+    print(f"[gcl] {' '.join(cmd)}", flush=True)
     if env is None:
         env = os.environ.copy()
     subprocess.run(cmd, cwd=cwd, check=True, env=env)
@@ -517,7 +540,8 @@ def run_optional(cmd: list[str], cwd: Path, env: dict | None = None) -> bool:
     or the target fails, only a warning is shown and the build continues.
     Return: True (success) / False (failed or tool missing).
     """
-    print(f"[gcl] {' '.join(str(x) for x in cmd)}", flush=True)
+    cmd = [source_path(str(x)) for x in cmd]
+    print(f"[gcl] {' '.join(cmd)}", flush=True)
     if env is None:
         env = os.environ.copy()
     try:
@@ -1602,7 +1626,7 @@ def build_gcl() -> Path:
     # even if they are not tracked in CI, they appear during the build, so they are excluded.
     generated = {str(FREEFONT_EMBED), str(ICON_EMBED)}
     missing_ide = [s for s in IDE_SRCS
-                   if s not in generated and not (ROOT / s).exists()]
+                   if s not in generated and not (ROOT / source_path(s)).exists()]
     if not missing_ide:
         # _SRC/complete/complete_native_db.c is a checked-in source file. The
         # generator that used to derive it from the module bindings
@@ -1676,8 +1700,8 @@ def build_gcl() -> Path:
            "-D_POSIX_C_SOURCE=200809L"]
     # If _SRC/build/*.c is absent in CI, skip the gcBundle sources and disable the bundle code
     # in gcl_main.c via -DGCL_SKIP_BUNDLE.
-    gcl_srcs = [s for s in GCL_SRCS if (ROOT / s).exists()]
-    if not (ROOT / "_SRC" / "build" / "gcbundle_reader.c").exists():
+    gcl_srcs = [s for s in GCL_SRCS if (ROOT / source_path(s)).exists()]
+    if not (ROOT / "build" / "gcbundle_reader.c").exists():
         cmd += ["-DGCL_SKIP_BUNDLE"]
     cmd += gcl_srcs
     # gcl_runner.c uses fmod → libm is required (it should be added in the Linux makefile as -lm;

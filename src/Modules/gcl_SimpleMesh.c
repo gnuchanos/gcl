@@ -96,6 +96,10 @@ RaylibSimpleMesh.UnloadObj(CUBE);
 #include <stdlib.h>
 #include <string.h>
 
+/* Frustum + AABB + yazilim occlusion + (terrain icin) chunk culling.
+   Header-only; tanimli oldugu her cizim yolunda gorunur. */
+#include "gcl_cull.h"
+
 #define MESH_SLOT_COUNT 12
 #define MODEL_MAX       64
 #define MODEL_NAME_MAX  512
@@ -134,6 +138,22 @@ typedef struct {
     float  local_min[3];
     float  local_max[3];
     int    local_bounds_ready;
+    /* ---------- CHUNK SISTEMI (yalnizca BUYUK modeller icin) ----------
+
+       Buyuk bir arazi TEK bir mesh'tir; tek draw cagrisiyla on binlerce
+       ucgenin TAMAMI, kameranin arkasinda kalanlar dahil, GPU'ya gider.
+       Cozum: modeli YEREL X/Z duzleminde bir izgaraya bolmek ve her hucreyi
+       AYRI bir mesh olarak tutmak. Cizimde her parcaya "frustumda mi" sorulur;
+       arkada kalan parcalar hic gonderilmez.
+
+       Onemli: bu YALNIZCA CIZIMI boler. Model, collision ve yukseklik
+       sorgulari icin AYNEN durur (gcl_simplemesh_triangle hala tek tek
+       ucgenleri `model.meshes`ten verir), yani carpisilan geometri ile
+       cizilen geometri ayrisamaz. Parcalar, modelin materyalini paylasir. */
+    Mesh  *chunks;        /* hucre basina bir mesh (bos hucre: vertexCount 0) */
+    int    chunk_count;
+    float *chunk_lo;      /* chunk_count * 3, YEREL AABB alt kose */
+    float *chunk_hi;      /* chunk_count * 3, YEREL AABB ust kose */
     int    used;
 } ModelEntry;
 
@@ -225,6 +245,320 @@ static Matrix mesh_transform(void) {
     return compose_transform(g_slot[M_POS_X], g_slot[M_POS_Y], g_slot[M_POS_Z],
                              g_slot[M_ROT_X], g_slot[M_ROT_Y], g_slot[M_ROT_Z],
                              g_slot[M_SCALE_X], g_slot[M_SCALE_Y], g_slot[M_SCALE_Z]);
+}
+
+/* ================= GORUNTULEME (CULLING) ve CHUNK SISTEMI =================
+
+   Uc eleme, ucu de KONSERVATIF (yanlis eleme uretemez):
+     * FRUSTUM  : kameranin gorus hacminin disinda kalan nesneyi cizme.
+     * OCCLUSION: onune ARAZI girmis nesneyi cizme ("dagin arkasindaki kutu").
+     * CHUNK    : buyuk araziyi X/Z izgarasina bolup her parcayi AYRI elemek.
+
+   Cizim sirasi bunu mumkun kilar: script araziyi (occluder) kutulardan ONCE
+   cizer. Arazi cizilirken bir kez occluder kurulur (ucgenleri kaba yazilim
+   derinlik tamponuna rastrelenir); sonraki mesh cizimleri ona karsi sorulur. */
+
+typedef int (*GclMeshCamStateFn)(float *out11);
+
+static GclMeshCamStateFn mesh_cam_state(void) {
+    static GclMeshCamStateFn fn = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        fn = (GclMeshCamStateFn)gcl_module_symbol("Raylib.dll", "gcl_raylib_camera_state");
+    }
+    return fn;
+}
+
+/* Chunk izgarasi: yerel X/Z'de hucre boyu (metre) ve eksen basina ust sinir.
+   16 m, on binlerce ucgenlik bir arazide makul sayida parca uretir. Sinir
+   asilirsa hucre buyur (izgara kabalasir) ama DOGRULUK bozulmaz. */
+#define MESH_CHUNK_CELL     16.0f
+#define MESH_CHUNK_GRID_MAX 48
+
+/* Bu dosyada DAHA SONRA tanimlanan ucgen yardimcilari; asagidaki chunk ve
+   occluder kodu onlari kullanir. */
+static int mesh_triangle_count(const Mesh *m);
+static int mesh_triangle_at(const Mesh *m, int t, float out9[9]);
+static int mesh_tri_full(const Mesh *m, int t,
+                         float pos9[9], float nrm9[9], float uv6[6],
+                         int *has_nrm, int *has_uv);
+
+static GclOccluder g_occluder;
+
+/* Kameradan frustum kur. Donus 1 = gecerli perspektif kamera. */
+static int mesh_make_frustum(GclFrustum *f) {
+    float st[11];
+    GclMeshCamStateFn fn = mesh_cam_state();
+    float w, h, aspect;
+    if (!fn || !fn(st)) return 0;
+    if ((int)st[10] != 0) return 0;            /* ortografik: eleme yapma */
+    w = (float)GetScreenWidth();
+    h = (float)GetScreenHeight();
+    aspect = (h > 0.0f) ? (w / h) : (16.0f / 9.0f);
+    gcl_frustum_from_camera(&st[0], &st[3], &st[6], st[9], aspect, f);
+    return f->valid;
+}
+
+/* Ucgenin TUM vertex nitelikleri (konum + normal + doku koordinati).
+   mesh_triangle_at yalnizca konum verir; chunk kurarken normaller ve UV'ler
+   de tasinmalidir, yoksa parcalanan arazi DUZ renkli gorunur. */
+static int mesh_tri_full(const Mesh *m, int t,
+                         float pos9[9], float nrm9[9], float uv6[6],
+                         int *has_nrm, int *has_uv) {
+    const float *v;
+    int i0, i1, i2, k, idx[3];
+
+    if (!m || !(v = (const float *)m->vertices)) return 0;
+    if (t < 0 || t >= mesh_triangle_count(m)) return 0;
+
+    if (m->indices) {
+        i0 = m->indices[t * 3 + 0];
+        i1 = m->indices[t * 3 + 1];
+        i2 = m->indices[t * 3 + 2];
+    } else {
+        i0 = t * 3 + 0; i1 = t * 3 + 1; i2 = t * 3 + 2;
+    }
+    if (i0 >= m->vertexCount || i1 >= m->vertexCount || i2 >= m->vertexCount) return 0;
+    idx[0] = i0; idx[1] = i1; idx[2] = i2;
+
+    for (k = 0; k < 3; k++) {
+        int ii = idx[k];
+        pos9[k * 3 + 0] = v[ii * 3 + 0];
+        pos9[k * 3 + 1] = v[ii * 3 + 1];
+        pos9[k * 3 + 2] = v[ii * 3 + 2];
+        if (m->normals) {
+            nrm9[k * 3 + 0] = m->normals[ii * 3 + 0];
+            nrm9[k * 3 + 1] = m->normals[ii * 3 + 1];
+            nrm9[k * 3 + 2] = m->normals[ii * 3 + 2];
+        }
+        if (m->texcoords) {
+            uv6[k * 2 + 0] = m->texcoords[ii * 2 + 0];
+            uv6[k * 2 + 1] = m->texcoords[ii * 2 + 1];
+        }
+    }
+    *has_nrm = (m->normals != NULL);
+    *has_uv  = (m->texcoords != NULL);
+    return 1;
+}
+
+/* Chunk'lari serbest birak. (release_entry ve hata yollari cagirir.) */
+static void mesh_chunk_free(ModelEntry *e) {
+    int i;
+    if (!e) return;
+    if (e->chunks) {
+        for (i = 0; i < e->chunk_count; i++) {
+            if (e->chunks[i].vertexCount > 0) UnloadMesh(e->chunks[i]);
+        }
+        free(e->chunks);
+    }
+    if (e->chunk_lo) free(e->chunk_lo);
+    if (e->chunk_hi) free(e->chunk_hi);
+    e->chunks = NULL;
+    e->chunk_lo = NULL;
+    e->chunk_hi = NULL;
+    e->chunk_count = 0;
+}
+
+/* Modeli yerel X/Z izgarasina bol; her hucre icin AYRI bir Mesh kur ve GPU'ya
+   yukle. Normaller ve UV'ler korunur. Donus: kurulan parca sayisi (0 =
+   bolunmedi; o zaman tek draw yoluna dusulur). */
+static int build_chunks(ModelEntry *e) {
+    float lo[3], hi[3];
+    float spanx, spanz, cellx, cellz;
+    int nx, nz, cells, mi, i;
+    int *count = NULL, *cursor = NULL;
+    int total_tris = 0;
+    int seen = 0;
+
+    if (!e || !e->model.meshCount) return 0;
+
+    for (mi = 0; mi < e->model.meshCount; mi++) {
+        const Mesh *m = &e->model.meshes[mi];
+        const float *v = (const float *)m->vertices;
+        if (!v || m->vertexCount <= 0) continue;
+        for (i = 0; i < m->vertexCount; i++) {
+            float x = v[i * 3 + 0], y = v[i * 3 + 1], z = v[i * 3 + 2];
+            if (!seen) {
+                lo[0] = hi[0] = x; lo[1] = hi[1] = y; lo[2] = hi[2] = z;
+                seen = 1;
+            } else {
+                if (x < lo[0]) lo[0] = x; else if (x > hi[0]) hi[0] = x;
+                if (y < lo[1]) lo[1] = y; else if (y > hi[1]) hi[1] = y;
+                if (z < lo[2]) lo[2] = z; else if (z > hi[2]) hi[2] = z;
+            }
+        }
+    }
+    if (!seen) return 0;
+
+    spanx = hi[0] - lo[0];
+    spanz = hi[2] - lo[2];
+    if (!(spanx > 0.0f)) spanx = MESH_CHUNK_CELL;
+    if (!(spanz > 0.0f)) spanz = MESH_CHUNK_CELL;
+
+    nx = (int)(spanx / MESH_CHUNK_CELL) + 1;
+    nz = (int)(spanz / MESH_CHUNK_CELL) + 1;
+    if (nx < 1) nx = 1;
+    if (nz < 1) nz = 1;
+    if (nx > MESH_CHUNK_GRID_MAX) nx = MESH_CHUNK_GRID_MAX;
+    if (nz > MESH_CHUNK_GRID_MAX) nz = MESH_CHUNK_GRID_MAX;
+    if (nx <= 1 && nz <= 1) return 0;          /* tek hucre: bolmenin anlami yok */
+
+    cellx = spanx / (float)nx;
+    cellz = spanz / (float)nz;
+    cells = nx * nz;
+
+    count = (int *)calloc((size_t)cells, sizeof(int));
+    if (!count) return 0;
+
+    /* --- 1. gecis: hucre basina ucgen sayisi --- */
+    for (mi = 0; mi < e->model.meshCount; mi++) {
+        const Mesh *m = &e->model.meshes[mi];
+        int tri = mesh_triangle_count(m), t;
+        if (!m->vertices) continue;
+        for (t = 0; t < tri; t++) {
+            float p9[9], n9[9], u6[6];
+            int hn, hu, cx, cz;
+            float cxm, czm;
+            if (!mesh_tri_full(m, t, p9, n9, u6, &hn, &hu)) continue;
+            cxm = (p9[0] + p9[3] + p9[6]) / 3.0f;
+            czm = (p9[2] + p9[5] + p9[8]) / 3.0f;
+            cx = (int)((cxm - lo[0]) / cellx);
+            cz = (int)((czm - lo[2]) / cellz);
+            if (cx < 0) cx = 0; else if (cx >= nx) cx = nx - 1;
+            if (cz < 0) cz = 0; else if (cz >= nz) cz = nz - 1;
+            count[cz * nx + cx]++;
+            total_tris++;
+        }
+    }
+    if (total_tris <= 0) { free(count); return 0; }
+
+    e->chunks = (Mesh *)calloc((size_t)cells, sizeof(Mesh));
+    e->chunk_lo = (float *)calloc((size_t)cells * 3, sizeof(float));
+    e->chunk_hi = (float *)calloc((size_t)cells * 3, sizeof(float));
+    cursor = (int *)calloc((size_t)cells, sizeof(int));
+    if (!e->chunks || !e->chunk_lo || !e->chunk_hi || !cursor) {
+        free(count); free(cursor);
+        mesh_chunk_free(e);
+        return 0;
+    }
+    e->chunk_count = cells;
+
+    /* Hucre AABB'leri: X/Z hucresi, Y tam aralik (konservatif, cunku bir
+       hucredeki ucgenlerin Y araligi onceden bilinmez). */
+    for (i = 0; i < cells; i++) {
+        int cx = i % nx, cz = i / nx;
+        e->chunk_lo[i * 3 + 0] = lo[0] + cellx * (float)cx;
+        e->chunk_lo[i * 3 + 1] = lo[1];
+        e->chunk_lo[i * 3 + 2] = lo[2] + cellz * (float)cz;
+        e->chunk_hi[i * 3 + 0] = lo[0] + cellx * (float)(cx + 1);
+        e->chunk_hi[i * 3 + 1] = hi[1];
+        e->chunk_hi[i * 3 + 2] = lo[2] + cellz * (float)(cz + 1);
+
+        if (count[i] <= 0) continue;
+        {
+            Mesh *cm = &e->chunks[i];
+            memset(cm, 0, sizeof(*cm));
+            cm->vertexCount   = count[i] * 3;
+            cm->triangleCount = count[i];
+            cm->vertices  = (float *)calloc((size_t)cm->vertexCount * 3, sizeof(float));
+            cm->normals   = (float *)calloc((size_t)cm->vertexCount * 3, sizeof(float));
+            cm->texcoords = (float *)calloc((size_t)cm->vertexCount * 2, sizeof(float));
+            if (!cm->vertices || !cm->normals || !cm->texcoords) {
+                free(count); free(cursor);
+                mesh_chunk_free(e);
+                return 0;
+            }
+        }
+    }
+
+    /* --- 2. gecis: ucgenleri kendi parcasina yaz --- */
+    for (mi = 0; mi < e->model.meshCount; mi++) {
+        const Mesh *m = &e->model.meshes[mi];
+        int tri = mesh_triangle_count(m), t;
+        if (!m->vertices) continue;
+        for (t = 0; t < tri; t++) {
+            float p9[9], n9[9], u6[6];
+            int hn, hu, cx, cz, ci, base, k;
+            float cxm, czm;
+            Mesh *cm;
+            if (!mesh_tri_full(m, t, p9, n9, u6, &hn, &hu)) continue;
+            cxm = (p9[0] + p9[3] + p9[6]) / 3.0f;
+            czm = (p9[2] + p9[5] + p9[8]) / 3.0f;
+            cx = (int)((cxm - lo[0]) / cellx);
+            cz = (int)((czm - lo[2]) / cellz);
+            if (cx < 0) cx = 0; else if (cx >= nx) cx = nx - 1;
+            if (cz < 0) cz = 0; else if (cz >= nz) cz = nz - 1;
+            ci = cz * nx + cx;
+            cm = &e->chunks[ci];
+            base = cursor[ci];
+            cursor[ci]++;
+
+            for (k = 0; k < 3; k++) {
+                int vb = (base * 3 + k);
+                if (hn) {
+                    cm->normals[vb * 3 + 0] = n9[k * 3 + 0];
+                    cm->normals[vb * 3 + 1] = n9[k * 3 + 1];
+                    cm->normals[vb * 3 + 2] = n9[k * 3 + 2];
+                } else {
+                    /* Normal yok: ucgenin YUZ normalini uret. */
+                    float ax = p9[3] - p9[0], ay = p9[4] - p9[1], az = p9[5] - p9[2];
+                    float bx = p9[6] - p9[0], by = p9[7] - p9[1], bz = p9[8] - p9[2];
+                    float nxv = ay * bz - az * by;
+                    float nyv = az * bx - ax * bz;
+                    float nzv = ax * by - ay * bx;
+                    float len = sqrtf(nxv * nxv + nyv * nyv + nzv * nzv);
+                    if (len > 1.0e-9f) { nxv /= len; nyv /= len; nzv /= len; }
+                    else { nxv = 0.0f; nyv = 1.0f; nzv = 0.0f; }
+                    cm->normals[vb * 3 + 0] = nxv;
+                    cm->normals[vb * 3 + 1] = nyv;
+                    cm->normals[vb * 3 + 2] = nzv;
+                }
+                if (hu) {
+                    cm->texcoords[vb * 2 + 0] = u6[k * 2 + 0];
+                    cm->texcoords[vb * 2 + 1] = u6[k * 2 + 1];
+                }
+                cm->vertices[vb * 3 + 0] = p9[k * 3 + 0];
+                cm->vertices[vb * 3 + 1] = p9[k * 3 + 1];
+                cm->vertices[vb * 3 + 2] = p9[k * 3 + 2];
+            }
+        }
+    }
+
+    for (i = 0; i < cells; i++) {
+        if (e->chunks[i].vertexCount > 0) UploadMesh(&e->chunks[i], false);
+    }
+
+    free(count);
+    free(cursor);
+    return cells;
+}
+
+/* Modelin butun ucgenlerini, verilen donusumle dunyaya tasiyip occluder'a
+   rastrele. Ucgenler ardisik gelir; near arkasinda kalan ucgen yalnizca
+   occluder OLMAZ (konservatif). */
+static void raster_model_occluder(const Model *model, const Matrix *xf,
+                                  const GclFrustum *fr) {
+    int mi;
+    if (!model || !fr || !fr->valid) return;
+    for (mi = 0; mi < model->meshCount; mi++) {
+        const Mesh *m = &model->meshes[mi];
+        int tri = mesh_triangle_count(m), t;
+        if (!m->vertices) continue;
+        for (t = 0; t < tri; t++) {
+            float l9[9];
+            float wa[3], wb[3], wc[3];
+            Vector3 a, b, c;
+            if (!mesh_triangle_at(m, t, l9)) continue;
+            a = Vector3Transform((Vector3){ l9[0], l9[1], l9[2] }, *xf);
+            b = Vector3Transform((Vector3){ l9[3], l9[4], l9[5] }, *xf);
+            c = Vector3Transform((Vector3){ l9[6], l9[7], l9[8] }, *xf);
+            wa[0] = a.x; wa[1] = a.y; wa[2] = a.z;
+            wb[0] = b.x; wb[1] = b.y; wb[2] = b.z;
+            wc[0] = c.x; wc[1] = c.y; wc[2] = c.z;
+            gcl_occ_triangle(&g_occluder, fr, wa, wb, wc);
+        }
+    }
 }
 
 static ModelEntry *entry_of(int handle) {
@@ -400,6 +734,7 @@ static double load_model_entry(const char *file) {
 /* Kaydi bosalt: modeli serbest birak ve slotu geri ver. */
 static void release_entry(int handle) {
     if (!entry_of(handle)) return;
+    mesh_chunk_free(&g_models[handle]);   /* once parcalari serbest birak */
     UnloadModel(g_models[handle].model);
     g_models[handle].model = (Model){0};
     g_models[handle].used  = 0;
@@ -708,6 +1043,31 @@ GCL_EXPORT int gcl_simplemesh_triangle_count(double handle_d,
 /* `index` numarali ucgenin DUNYA uzayindaki uc kosesi (out9: v0.xyz v1.xyz
    v2.xyz). Modelin kendi donusumu ile script'in Position/Rotate/Scale'i
    CIZIMLE AYNI sirada uygulanir. */
+/* SON DONUSUM ONBELLEGI (PERFORMANS).
+
+   Collision modulu bir mesh'in TUM ucgenlerini cekerken bu fonksiyonu ARDI
+   ARDINA cagirir (bkz. gcl_SimpleCollision.c: gather_mesh) ve her cagride
+   handle + 9 donusum degeri AYNIDIR: kutu bir kez konumlandirilir, sonra
+   butun ucgenleri o konumdan alinir. Onbellek olmadan `compose_transform`
+   (3 matris kurma) + `MatrixMultiply` her ucgen icin YENIDEN hesaplaniyordu:
+   N ucgenlik bir mesh icin N kez ayni matris.
+
+   Buradaki onbellek, son cagrinin (handle + 9 skaler) tam matrisini tutar.
+   Ardisik cagrilar ayni donusumle geliyorsa matris BIR kez kurulur. Onbellegi
+   gecersiz kilmak icin 10 double karsilastirilir — matris kurmaktan cok daha
+   ucuz. Terrain toplama gibi toplu cekimlerde N-1 matris carpimi kazanilir.
+
+   Anahtar 10 doublenin HEPSINI kapsar; biri degisirse (nesne hareket etti)
+   matris bastan kurulur, yani onbellek asla bayat donusum dondurmez. */
+typedef struct {
+    int    handle;
+    double xf[9];
+    Matrix full;
+    int    valid;
+} MeshXformCache;
+
+static MeshXformCache g_tri_xform;
+
 GCL_EXPORT int gcl_simplemesh_triangle(double handle_d,
                                        double px, double py, double pz,
                                        double rx, double ry, double rz,
@@ -716,9 +1076,30 @@ GCL_EXPORT int gcl_simplemesh_triangle(double handle_d,
     ModelEntry *e = entry_of((int)handle_d);
     Matrix full;
     float  local[9];
-    int    t;
+    int    t, same;
 
     if (!e || !out9 || index < 0) return 0;
+
+    /* Ayni (handle + 9 skaler) ise matrisi yeniden kurma. */
+    same = g_tri_xform.valid && g_tri_xform.handle == (int)handle_d;
+    if (same) {
+        const double want[9] = { px, py, pz, rx, ry, rz, sx, sy, sz };
+        for (int k = 0; k < 9; k++) {
+            if (g_tri_xform.xf[k] != want[k]) { same = 0; break; }
+        }
+    }
+    if (same) {
+        full = g_tri_xform.full;
+    } else {
+        full = MatrixMultiply(e->base_transform,
+                              compose_transform(px, py, pz, rx, ry, rz, sx, sy, sz));
+        g_tri_xform.handle = (int)handle_d;
+        g_tri_xform.xf[0] = px; g_tri_xform.xf[1] = py; g_tri_xform.xf[2] = pz;
+        g_tri_xform.xf[3] = rx; g_tri_xform.xf[4] = ry; g_tri_xform.xf[5] = rz;
+        g_tri_xform.xf[6] = sx; g_tri_xform.xf[7] = sy; g_tri_xform.xf[8] = sz;
+        g_tri_xform.full  = full;
+        g_tri_xform.valid = 1;
+    }
 
     t = index;
     for (int i = 0; i < e->model.meshCount; i++) {
@@ -726,8 +1107,6 @@ GCL_EXPORT int gcl_simplemesh_triangle(double handle_d,
         if (t >= count) { t -= count; continue; }
         if (!mesh_triangle_at(&e->model.meshes[i], t, local)) return 0;
 
-        full = MatrixMultiply(e->base_transform,
-                              compose_transform(px, py, pz, rx, ry, rz, sx, sy, sz));
         for (int v = 0; v < 3; v++) {
             Vector3 p = { local[v * 3 + 0], local[v * 3 + 1], local[v * 3 + 2] };
             Vector3 w = Vector3Transform(p, full);

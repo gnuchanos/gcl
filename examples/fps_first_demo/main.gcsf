@@ -1,7 +1,7 @@
 #native <Stdio>
 #native <Embed>
-#native <Raylib>
 
+#native <Raylib>
 #native <RaylibFPS>
 #native <RaylibSimpleCollision>
 #native <RaylibSimpleMesh>
@@ -10,12 +10,13 @@
 #native <RaylibSkybox>
 #native <RaylibFOG>
 #native <RaylibSimpleWater>
-
 #native <RaylibRender>
+
 
 
 int main() {
     Raylib.InitWindow(1024, 768, "GCL Project");
+
 
     #// skybox
     RaylibSKYBOX.Skybox sky = RaylibSKYBOX.CreateSimpleSkybox();
@@ -23,24 +24,21 @@ int main() {
     sky.cloudON = true;
     sky.CloudSpeed = 0.05;
 
-    #// Daylight is white. A saturated sun colour multiplies the terrain texture
-    #// channel by channel, so Raylib.YELLOW (255,255,0) zeroes the blue channel
-    #// and turns every white texel yellow.
     RaylibSimpleLight.SunLight SUN = RaylibSimpleLight.CreateSun(Raylib.WHITE);
     SUN.Rotate.x = 0;
     SUN.Rotate.z = 90;
     SUN.Rotate.y = 0;
-
+    
     #// extra point light
-    RaylibSimpleLight.SunLight _0_point_light = RaylibSimpleLight.CreatePointLight(Raylib.RED, SUN, 5, 5, 0);
-    RaylibSimpleLight.SunLight _1_point_light = RaylibSimpleLight.CreatePointLight(Raylib.GREEN, SUN, 0, 5, 0);
-    RaylibSimpleLight.SunLight _2_point_light = RaylibSimpleLight.CreatePointLight(Raylib.YELLOW, SUN, 15, -1, -4);
-    RaylibSimpleLight.SunLight _3_point_light = RaylibSimpleLight.CreatePointLight(Raylib.YELLOW, SUN, 0, 0, 0);
+    RaylibSimpleLight.PointLight _0_point_light = RaylibSimpleLight.CreatePointLight(Raylib.RED, SUN, 5, 5, 0);
+    RaylibSimpleLight.PointLight _1_point_light = RaylibSimpleLight.CreatePointLight(Raylib.GREEN, SUN, 0, 5, 0);
+    RaylibSimpleLight.PointLight _2_point_light = RaylibSimpleLight.CreatePointLight(Raylib.YELLOW, SUN, 15, -1, -4);
+    RaylibSimpleLight.PointLight _3_point_light = RaylibSimpleLight.CreatePointLight(Raylib.YELLOW, SUN, 0, 0, 0);
+    
+    
     # light color, sun light, x, y, 
-
-
     RaylibFOG.FOG fogy = RaylibFOG.CreateFog(Raylib.SKYBLUE, 0.25f, 10.0f, 45.0f, true, true);
-        #// Color, Density, Start, End, Enabled, HeightFog
+    #// Color, Density, Start, End, Enabled, HeightFog
     fogy.Mode = RaylibFOG.ExponentialSquared;
     #// Yukseklik sisi: arazi -11..+10 arasinda, kamera y=1.8. Tepeler daha az
     #// sisli kalir, cokukler daha yogun dolar.
@@ -52,19 +50,6 @@ int main() {
     RaylibFPS.FPS PLAYER;
     Raylib.Camera3D CurrentCamera = PLAYER.Camera;
     PLAYER.CameraFOV = 90;
-
-    #// IKI AYRI HIZ — ADLARI BENZER, ISI FARKLI.
-    #//
-    #//   CameraSpeed      = KAMERANIN DONME hizi (fare). "Bakisim agir."
-    #//   CameraMoveSpeed  = YURUME hizi carpani (WASD). "Cok yavas yuruyorum."
-    #//
-    #// Ikisi tek alanda tutulsaydi "fareyi hizlandir" istegi yurumeyi de
-    #// hizalandirir, "yurumeyi yavaslat" istegi bakisi agirlastirirdi. Bu
-    #// yuzden ayridirlar ve YUVA NUMARALARI FARKLIDIR (29 ve 27).
-    #//
-    #// Ikisi de carpan: 1.0 = belgelenmis hiz, 2.0 = iki kat. 0 ya da
-    #// negatif deger varsayilana doner; donmayan bir fare ve duran bir
-    #// oyuncu birer ayar degil, birer hatadir.
     PLAYER.CameraSpeed     = 1.0f;  # bakis (fare)
     PLAYER.CameraMoveSpeed = 1.0f;  # yurume (WASD)
     
@@ -83,25 +68,6 @@ int main() {
     water.WaveScale = 0.6f;
     water.Reflection = 1f;
 
-    #// Su modulu YALNIZCA GEOMETRIDIR (yuzey + taban). "Yuzuyor muyum",
-    #// esikler ve fizik oyuncunun kendi modulunde (RaylibFPS) yasar; boylece
-    #// ekranin "yuzuyorum" dedigi an ile fizigin yuzdugu an ayrisamaz.
-
-    #// SHADER SURUMU CALISMA ANINDA SECILIR.
-    #//
-    #// Iki shader cifti var cunku GLSL 3.30 ile 1.20 arasindaki fark yalnizca
-    #// bir surum numarasi DEGILDIR: 1.20'de `in/out` yerine `attribute/varying`,
-    #// `texture()` yerine `texture2D()`, cikis degiskeni yerine `gl_FragColor`
-    #// kullanilir. Ayni dosya ikisini birden konusamaz.
-    #//
-    #//   assets/lighting.vs / .fs       -> #version 330
-    #//   assets/lighting_gl2.vs / .fs   -> #version 120  (ayni islev)
-    #//
-    #// HANGISI: baglamin gercekten konustugu surum. Intel GM965/GL960
-    #// (GMA X3100, Vostro A860) OpenGL 2.1 tavanlidir ve 330'luk shader'i
-    #// DERLEMEZ; orada 120'lik varyant yuklenir. Sabit 330 yazmak o makinede
-    #// shader'i derlenmez birakir ve sahne tamamen CIZIMSIZ kalirdi.
-    #// GetGLSLVersion() 120 / 330 / 100 / 300 dondurur (bkz. gcl_raylib.c).
     int glsl_ver = Raylib.GetGLSLVersion();
     gcChar shader_vs = "lighting.vs";
     gcChar shader_fs = "lighting.fs";
@@ -111,118 +77,60 @@ int main() {
     }
     RaylibShader.SimpleShader shader = RaylibShader.CreateSimpleShader(shader_vs, shader_fs, glsl_ver);
 
-
-
-
     RaylibSimpleMesh.Mesh CUBE = RaylibSimpleMesh.LoadObj("cube.obj");
     CUBE.Position.x = 0;  # default 0
     CUBE.Position.y = 0;  # default 0
-    CUBE.Position.z = 0;  # spawn noktasinin onunde (arazi y ~ -0.16)
+    CUBE.Position.z = 0;  # default 0
 
     CUBE.Rotate.x   = 0;  # default 0 (derece)
     CUBE.Rotate.y   = 45; # default 0; kutunun yuzlerini gosterir
     CUBE.Rotate.z   = 0;  # default 0
-
-
-
     CUBE.Material.Texture = Raylib.LoadTexture("box.png");
 
-
-
-
-    #// IC COZUNURLUK: sahne 320x240'ta cizilir, ekrana GERILEREK basilir.
-    #// Pahali kisim (arazi, isik, su, golgelendirme) 4.5 kat az pikselde
-    #// kosar; ekrana basmak tek bir doku cizimidir. Amac zayif makinede
-    #// oynanabilir kalmak.
-    #//
-    #// DIKKAT - ORAN KORUNMAZ (STRETCH): buradaki 320x240 (4:3) bir dizustu
-    #// ekraninda 16:9'a gerdirilir, yani goruntu yatayda ~%33 fazla buyur
-    #// ve daireler ELIPS olur. Bu bilincli bir secimdir.
-    #// Bozulma istemiyorsan ic cozunurlugu ekranin oraniyla ayni sec:
-    #// 16:9 icin 320x240 yerine 480x270 (veya 384x216) kullan.
-    #// Ayrintili gerekce: _SRC/Modules/gcl_Render.c basligi.
     RaylibRender.FullScreenRenderResolution(320, 240);
 
 
-
-    #// Raylib.SetTargetFPS(60);
+    # Raylib.SetTargetFPS(30);
     while (!Raylib.WindowShouldClose()) {
         Raylib.BeginDrawing();
         Raylib.ClearBackground(Raylib.BLUE);
 
-        #// Player Move And Look
         PLAYER.Move();
         PLAYER.Look();
+
         _3_point_light.Position.x = PLAYER.Position.x;
         _3_point_light.Position.y = PLAYER.Position.y + 5;
         _3_point_light.Position.z = PLAYER.Position.z;
         
-
-        #// Terrain Collision (arazi + zemin tabani)
-        RaylibSimpleCollision.TerrainCollision(PLAYER, Terrain);
-
-        #// KUTU CARPISMASI: kapsul, kutunun UCGENLERINE karsi cozulur.
-        #// Oyuncu Height uzunlugunda ve 0.3 yaricapinda DIMDIK bir kapsuldur.
-        #// Ucgenler kullanim noktasinda Position/Rotate/Scale uygulanmis olarak
-        #// gelir (gcl_simplemesh_triangle), yani CUBE.Rotate.y = 45 ile
-        #// DONDURULMUS kutu DOGRU temsil edilir. Hareket argumani yoktur:
-        #// konumu FPS ve TerrainCollision ilerletir, burasi yalnizca kutunun
-        #// icinde kalmis kapsulu disari iter.
         RaylibSimpleCollision.SimpleBoxCollision(PLAYER, CUBE);
-
-        #// skybox update
+        RaylibSimpleCollision.TerrainCollision(PLAYER, Terrain);
         SUN.Update();
+
         _0_point_light.Update();
         _1_point_light.Update();
         _2_point_light.Update();
         _3_point_light.Update();
+
         sky.Update();
-        water.Update(); # update shader
-        # fogy.Update();
+        water.Update();
+        fogy.Update();
 
             Raylib.BeginMode3D(CurrentCamera);
                 sky.Draw(); #// no need for extra shader
-
                 Raylib.BeginShaderMode(shader);
-                    #// SIS: uniform'lari ARazi ile AYNI shader'a yazar. Bu yuzden
-                    #// BeginShaderMode'un ICINDE olmak ZORUNDA - disinda cagrilirsa
-                    #// hangi programin hedeflendigi belli olmaz ve sis uygulanmaz.
                     Terrain.Draw();
                     water.Draw();
                     CUBE.Draw();
-
                 
-
-
-
-
-
                 Raylib.EndShaderMode();
-
-                #// GLOW SAHNEDEN SONRA CIZILIR. Once cizildiginde derinlik
-                #// maskesi kapali oldugu icin hicbir derinlik yazmiyordu ve
-                #// ARDINDAN gelen opak arazi (ve kutu) onun uzerine boyanip
-                #// glow'u siliyordu: gokyuzune bakinca gorunuyor, araziye
-                #// donunce KAYBOLUYORDU. Artik sahne once cizilir; glow
-                #// VARSAYILAN programla, derinlik testine girerek cizilir.
-                #// Boylece hem araziye gore DOGRU sekilde kapanir, hem de ne
-                #// sis ne isiklandirma uygulanir.
                 _0_point_light.Draw(); #// glowing cube
                 _1_point_light.Draw(); #// glowing cube
                 _2_point_light.Draw(); #// glowing cube
                 _3_point_light.Draw(); #// glowing cube (oyuncunun tasidigi isik)
             Raylib.EndMode3D(void);
-
-        #// SU ALTI EKRAN EFEKTI: 2B katmanda, BeginMode3D KAPANDIKTAN sonra
-        #// cizilir. 3B blogun icinde cizilseydi kamerayla perspektife girer ve
-        #// kamerayi cevirince kayardi. Yalnizca GOZLER su yuzeyinin altindayken
-        #// devreye girer; derinlikle koyulasir.
         water.DrawUnderwaterEffect();
 
-        #// UI
         Raylib.DrawFPS(10, 10, Raylib.WHITE);
-
-
         Raylib.EndDrawing();
     }
 
@@ -232,6 +140,7 @@ int main() {
     Raylib.UnloadTexture(CUBE.Material.Texture);
     RaylibSimpleMesh.TerrainUnload("terrain.obj");
     RaylibSimpleMesh.UnloadObj(CUBE);
+
 
 
     Raylib.CloseWindow();

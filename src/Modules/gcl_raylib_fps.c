@@ -609,8 +609,23 @@ static void push_camera(void) {
    answer permanently "no" on Linux, so every collision query returned 0 and
    the player fell through the terrain. */
 static int collision_module_present(void) {
-    return gcl_module_symbol("RaylibSimpleCollision.dll",
-                             "gcl_raylibsimplecollision_get_functions") != NULL;
+    /* SONUC ONBELLEGE ALINIR — YALNIZCA "VAR" CEVABI.
+
+       NEDEN: bu sorgu `Move()` icinde HER KAREDE cagrilir ve
+       `gcl_module_symbol` bir dlsym/GetProcAddress'tir. Modul bir kez
+       yuklendiginde cevap artik DEGISMEZ; ayni aramayi her karede tekrarlamak
+       saf israftir.
+
+       NEGATIF CEVAP ONBELLEGE ALINMAZ: bir modul program calisirken
+       yuklenebilir (dinamik yukleme), ve "yok" cevabini kalici yazmak
+       collision'in bir daha asla gorulmemesine yol acardi. Yalnizca olumlu
+       sonuc saklanir; "yok" her seferinde yeniden sorulur ki modul geldiginde
+       FARK EDILSIN. */
+    static int present = 0;
+    if (present) return 1;
+    present = gcl_module_symbol("RaylibSimpleCollision.dll",
+                                "gcl_raylibsimplecollision_get_functions") != NULL;
+    return present;
 }
 
 /* Sudan CIKIS temizligi. Yuzmeden kalan DIKEY hiz kara fizigine sizarsa

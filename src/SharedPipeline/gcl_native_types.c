@@ -362,6 +362,15 @@ static const GclNativeStruct gcl_native_structs[] = {
        zaten kayitli (bkz. f_simplemesh notu). */
     { "RaylibSimpleMesh.Mesh", f_simplemesh,(int)(sizeof(f_simplemesh)   / sizeof(f_simplemesh[0]))   },
     { "SunLight",           f_sunlight,     (int)(sizeof(f_sunlight)     / sizeof(f_sunlight[0]))     },
+    /* RaylibSimpleLight.PointLight — nokta isik. Modul iki isik turunu TEK
+       struct ile temsil eder, bu yuzden PointLight'in alan duzeni SunLight ile
+       BIREBIR aynidir (f_sunlight); ikinci bir alan listesi tutmak ayni
+       gercegi iki yerde tutmak olurdu. Ayrim yalnizca TUTAMAC ARALIGINDADIR:
+       gunes 0..3, nokta isiklar 1000'den baslar (bkz. Modules/gcl_SimpleLight.c).
+       Bu kayit olmadan `RaylibSimpleLight.PointLight p = ...;` bildirimi
+       sessizce bos kalirdi: alan listesi yoksa `p.` zinciri ne tamamlamada
+       oneri uretir ne de yorumlayicida deger okur. */
+    { "PointLight",         f_sunlight,     (int)(sizeof(f_sunlight)     / sizeof(f_sunlight[0]))     },
     { "SimpleShader",       f_simpleshader, (int)(sizeof(f_simpleshader) / sizeof(f_simpleshader[0])) },
     { "Water",              f_water,        (int)(sizeof(f_water)        / sizeof(f_water[0]))        },
     { "Skybox",             f_skybox,       (int)(sizeof(f_skybox)       / sizeof(f_skybox[0]))       },

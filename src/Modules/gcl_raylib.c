@@ -137,21 +137,77 @@ static float ff(const char *s){ return s? (float)atof(s) : 0.0f; }
 
    Dosya adı gibi GÖRÜNMEYEN (nokta içermeyen) metinler hiç yoklanmaz: her
    karede çizilen `Raylib.DrawText("FPS", ...)` bir dosya sistemine bakmaz. */
+/* AD ÇÖZÜMLEME ÖNBELLEĞİ (PERFORMANS + DOĞRULUK).
+
+   NEDEN: `asset_path()` `ss()` üzerinden HER string argümanında çağrılır ve
+   nokta içeren bir metinde en fazla ÜÇ kez `FileExists()` yapar — yani üç
+   dosya sistemi syscall'ı. Kare döngüsünde her kare tekrarlanan bir
+   `Raylib.LoadTexture("terrain.png")` (ya da nokta içeren bir arayüz metni)
+   bu syscall'ları her karede yeniden yapıyordu.
+
+   NEDEN AYNI ZAMANDA BİR HATA DÜZELTMESİ: eski sürüm TEK bir `static char
+   resolved[4096]` tamponuna yazıp onu döndürüyordu. İki argümanlı bir çağrıda
+   — `Raylib.LoadShader(ss(vs), ss(fs))` — her iki argüman da AYNI tamponu
+   gösteriyordu: ikinci çözümleme birincinin üstüne yazıyor ve iki argüman da
+   ikinci yolu alıyordu. Artık her ad KENDİ kalıcı kopyasına sahiptir; bir
+   çağrı içindeki iki argüman birbirini EZEMEZ.
+
+   Yalnızca nokta içeren ve yol ayracı bulunmayan ADLAR önbelleğe girer;
+   bunun dışındakiler (`metin`, `a/b.png`) zaten dosya sistemine hiç bakmadan
+   aynen döner. */
+#define ASSET_CACHE_SLOTS 64
+#define ASSET_NAME_MAX    256
+#define ASSET_PATH_MAX    4096
+
+typedef struct { char name[ASSET_NAME_MAX]; char path[ASSET_PATH_MAX]; } AssetCacheEntry;
+static AssetCacheEntry g_asset_cache[ASSET_CACHE_SLOTS];
+static int g_asset_cache_n    = 0;   /* kullanılan yuva sayısı (0..SLOTS) */
+static int g_asset_cache_next = 0;   /* dolduğunda sıradaki kurban (round-robin) */
+
+static const char *asset_cache_get(const char *name) {
+    for (int i = 0; i < g_asset_cache_n; i++)
+        if (strcmp(g_asset_cache[i].name, name) == 0) return g_asset_cache[i].path;
+    return NULL;
+}
+
+/* `name` -> `path` eslesmesini kalici bir yuvaya yazar ve o yuvanin yol
+   tamponunu doner. Isim/yol yuvaya sigmiyorsa (256/4096) sahibi olmadigimiz
+   `path` aynen doner; bu yalnizca olagan disi uzun adlarda olur. */
+static const char *asset_cache_put(const char *name, const char *path) {
+    AssetCacheEntry *e;
+    if (strlen(name) >= ASSET_NAME_MAX || strlen(path) >= ASSET_PATH_MAX) return path;
+    if (g_asset_cache_n < ASSET_CACHE_SLOTS) {
+        e = &g_asset_cache[g_asset_cache_n++];
+    } else {
+        e = &g_asset_cache[g_asset_cache_next];
+        g_asset_cache_next = (g_asset_cache_next + 1) % ASSET_CACHE_SLOTS;
+    }
+    snprintf(e->name, sizeof(e->name), "%s", name);
+    snprintf(e->path, sizeof(e->path), "%s", path);
+    return e->path;
+}
+
 static const char *asset_path(const char *name) {
-    static char resolved[4096];
+    const char *hit;
     const char *dir;
+    char resolved[ASSET_PATH_MAX];
+
     if (!name || !name[0]) return name ? name : "";
     if (!strchr(name, '.')) return name;                        /* metin, dosya değil */
     if (strchr(name, '/') || strchr(name, '\\')) return name;   /* zaten yol */
-    if (FileExists(name)) return name;                          /* olduğu yerde */
+
+    hit = asset_cache_get(name);
+    if (hit) return hit;                                        /* önbellek isabeti: 0 syscall */
+
+    if (FileExists(name)) return asset_cache_put(name, name);   /* olduğu yerde */
     dir = getenv("GCL_PROJECT_DIR");
     if (dir && dir[0]) {
         snprintf(resolved, sizeof(resolved), "%s/assets/%s", dir, name);
-        if (FileExists(resolved)) return resolved;
+        if (FileExists(resolved)) return asset_cache_put(name, resolved);
     }
     snprintf(resolved, sizeof(resolved), "assets/%s", name);
-    if (FileExists(resolved)) return resolved;
-    return name;
+    if (FileExists(resolved)) return asset_cache_put(name, resolved);
+    return asset_cache_put(name, name);   /* bulunamadi: yazılan adı kalıcı kopyala */
 }
 
 /* Aynı kural diğer modüller için (RaylibSimpleMesh.LoadModel): dosya adı →

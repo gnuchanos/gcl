@@ -3173,6 +3173,10 @@ static const NativeLastMap g_native_last_maps[] = {
     { "AutomationEvent", last_aevent, (int)(sizeof(last_aevent) / sizeof(last_aevent[0])) },
     { "SimpleShader",    last_simpleshader, (int)(sizeof(last_simpleshader) / sizeof(last_simpleshader[0])) },
     { "SunLight",        last_sunlight,     (int)(sizeof(last_sunlight)     / sizeof(last_sunlight[0]))     },
+    /* PointLight, SunLight ile AYNI yapraklari paylasir (bkz.
+       gcl_native_types.c: f_sunlight). Modul iki isik turunu tek struct'la
+       temsil eder; erisimci adlari ve sira degismez. */
+    { "PointLight",      last_sunlight,     (int)(sizeof(last_sunlight)     / sizeof(last_sunlight[0]))     },
     { "Skybox",          last_skybox,       (int)(sizeof(last_skybox)       / sizeof(last_skybox[0]))       },
     { "Water",           last_water,        (int)(sizeof(last_water)        / sizeof(last_water[0]))        },
     { "FOG",             last_fog,          (int)(sizeof(last_fog)          / sizeof(last_fog[0]))          },
@@ -3274,6 +3278,10 @@ static const GclNativeSlotMap g_native_slot_maps[] = {
        cagriyi tumden reddeder; cagri modul yoluna dusup
        "'SUN.Update' is not a module call" diye raporlanir. */
     { "SunLight",    "RaylibSimpleLight",  8 },
+    /* PointLight — ayni 8 skaler yaprak; sayi f_sunlight[] ve last_sunlight[]
+       ile AYNI olmak zorundadir, yoksa call_native_struct_method() cagriyi
+       tumden reddeder ve `_0_point_light.Update()` "not a module call" der. */
+    { "PointLight",  "RaylibSimpleLight",  8 },
     { "SimpleShader", "RaylibShader",      1 },
     /* RaylibSKYBOX.Skybox: 9 skaler yaprak (Handle, DailyCycle, Time, DayLength,
        CloudAmount, CloudSpeed, StarAmount, SunSize, SunBrightness) — sayi
