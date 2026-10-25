@@ -1506,6 +1506,7 @@ def build_python_runtime(build_dir: Path) -> None:
         out_mod = embed_dir / f"{mod_name}.{ext_suffix}"
         cmd = ["gcc", "-std=c99", "-shared", "-fPIC", "-D_POSIX_C_SOURCE=200809L",
                "-I", "_SRC/embed",
+               "-I", "_SRC/include",
                "-I", str(RAYLIB_SRC),
                "-I", str(RAYLIB_SRC / "external" / "glfw" / "include"),
                "-I", str(RAYGUI_SRC)]
