@@ -1402,6 +1402,7 @@ def build_lua_runtime(build_dir: Path) -> None:
         out_dll = embed_dir / f"{out_name}.{ext}"
         cmd = ["gcc", "-std=c99", "-shared", "-fPIC", "-D_POSIX_C_SOURCE=200809L",
                "-I", "_SRC/embed",
+               "-I", "_SRC/include",
                "-I", str(LUA_SRC),
                "-I", str(RAYLIB_SRC),
                "-I", str(RAYLIB_SRC / "external" / "glfw" / "include"),
