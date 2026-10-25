@@ -386,8 +386,8 @@ void editor_update_particles(Editor *ed, float dt);
 /* fs */
 int fs_is_dir(const char *p);
 int fs_mkdir(const char *p);
-void fs_copy_file(const char *src, const char *dst);
-void fs_copy_dir_rec(const char *src, const char *dst);
+int fs_copy_file(const char *src, const char *dst);
+int fs_copy_dir_rec(const char *src, const char *dst);
 void fs_remove_rec(const char *p);
 void fs_parent_dir(const char *path, char *out, size_t outsz);
 const char *path_basename(const char *p);

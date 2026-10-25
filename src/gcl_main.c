@@ -25,6 +25,7 @@
 #else
 #include <unistd.h>
 #include <sys/wait.h>
+#include <errno.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #define POPEN  popen
@@ -850,9 +851,16 @@ static int build_project(const char *gcdata, const char *out_dir_arg) {
 #else
             char dest[4096];
             snprintf(dest, sizeof(dest), "%s/%s", out_dir, name);
-            char cmd[8192];
-            snprintf(cmd, sizeof(cmd), "cp \"%s\" \"%s\"", src_exe, dest);
-            if (system(cmd) == 0) {
+            pid_t copy_pid = fork();
+            int copy_status = -1;
+            if (copy_pid == 0) {
+                execlp("cp", "cp", src_exe, dest, (char *)NULL);
+                _exit(127);
+            }
+            if (copy_pid > 0) {
+                while (waitpid(copy_pid, &copy_status, 0) < 0 && errno == EINTR) {}
+            }
+            if (copy_pid > 0 && WIFEXITED(copy_status) && WEXITSTATUS(copy_status) == 0) {
                 printf("Built: %s\n", dest);
                 /* Linux: icon PNG + .desktop launcher next to the executable. */
                 if (gcl_icon_apply_project(project_dir, dest, name) == 0)
@@ -876,21 +884,46 @@ static int build_project(const char *gcdata, const char *out_dir_arg) {
 
 /* ---------- Python HTTP host (-pyhost) ---------- */
 static int pyhost(const char *port_str) {
-    int port = atoi(port_str);
-    if (port <= 0 || port > 65535) {
+    char *end = NULL;
+    long parsed_port = port_str ? strtol(port_str, &end, 10) : 0;
+    if (!port_str || end == port_str || *end != '\0' ||
+        parsed_port <= 0 || parsed_port > 65535) {
         fprintf(stderr, "Error: invalid port '%s'\n", port_str ? port_str : "");
         return 1;
     }
+    int port = (int)parsed_port;
     char cmd[1024];
 #ifdef _WIN32
     snprintf(cmd, sizeof(cmd), "python -m http.server %d", port);
-#else
-    snprintf(cmd, sizeof(cmd), "python3 -m http.server %d", port);
-#endif
     printf("Serving HTTP on http://localhost:%d\n", port);
     printf("Press Ctrl+C to stop.\n");
     fflush(stdout);
     return system(cmd);
+#else
+    char port_arg[16];
+    snprintf(port_arg, sizeof(port_arg), "%d", port);
+    printf("Serving HTTP on http://localhost:%d\n", port);
+    printf("Press Ctrl+C to stop.\n");
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return 1;
+    }
+    if (pid == 0) {
+        execlp("python3", "python3", "-m", "http.server", port_arg, (char *)NULL);
+        perror("python3");
+        _exit(127);
+    }
+    int status;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            perror("waitpid");
+            return 1;
+        }
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+#endif
 }
 
 /* ---------- Usage ---------- */

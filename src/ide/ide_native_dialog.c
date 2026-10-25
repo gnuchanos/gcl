@@ -69,29 +69,92 @@ char *gcl_ide_native_dialog_folder(char *out, size_t outsz) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdint.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 /* Linux / WSL: no native file dialog. Zenity (GNOME) or kdialog (KDE) opens a
    real GTK/KDE dialog. If neither exists, a simple PATH-based file picker
    (ls + enter) is used. This way the "Open Project"/"Browse" buttons
    actually work on Linux too — in WSL, if zenity is installed it opens via X11. */
 
-static char *run_capture(const char *cmd) {
-    FILE *p = popen(cmd, "r");
-    if (!p) return NULL;
+static char *run_capture(char *const argv[]) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return NULL;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return NULL;
+    }
+    if (pid == 0) {
+        close(pipefd[0]);
+        if (dup2(pipefd[1], STDOUT_FILENO) < 0) _exit(127);
+        close(pipefd[1]);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            (void)dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(pipefd[1]);
     char *buf = NULL;
     size_t cap = 0, len = 0;
-    char tmp[512];
-    while (fgets(tmp, sizeof(tmp), p)) {
-        size_t t = strlen(tmp);
-        char *nb = (char *)realloc(buf, cap + t + 1);
-        if (!nb) { free(buf); pclose(p); return NULL; }
-        buf = nb;
+    char tmp[1024];
+    int failed = 0;
+    for (;;) {
+        ssize_t got = read(pipefd[0], tmp, sizeof(tmp));
+        if (got == 0) break;
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            failed = 1;
+            break;
+        }
+        size_t t = (size_t)got;
+        if (t > SIZE_MAX - len - 1) {
+            failed = 1;
+            break;
+        }
+        if (len + t + 1 > cap) {
+            size_t next_cap = cap ? cap : 1024;
+            while (next_cap < len + t + 1) {
+                if (next_cap > SIZE_MAX / 2) {
+                    next_cap = len + t + 1;
+                    break;
+                }
+                next_cap *= 2;
+            }
+            char *nb = (char *)realloc(buf, next_cap);
+            if (!nb) {
+                failed = 1;
+                break;
+            }
+            buf = nb;
+            cap = next_cap;
+        }
         memcpy(buf + len, tmp, t);
         len += t;
-        cap += t;
+    }
+    close(pipefd[0]);
+    if (failed) (void)kill(pid, SIGTERM);
+    int status;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            free(buf);
+            return NULL;
+        }
+    }
+    if (failed || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        free(buf);
+        return NULL;
     }
     if (buf) buf[len] = '\0';
-    pclose(p);
     /* trim the trailing newline in the output */
     if (buf) {
         size_t l = strlen(buf);
@@ -102,35 +165,47 @@ static char *run_capture(const char *cmd) {
 
 static int has_cmd(const char *cmd) {
     if (!cmd || !cmd[0]) return 0;
-    char full[512];
-    snprintf(full, sizeof(full), "command -v %s >/dev/null 2>&1", cmd);
-    return system(full) == 0;
+    const char *path = getenv("PATH");
+    if (!path) return 0;
+    const char *part = path;
+    for (;;) {
+        const char *end = strchr(part, ':');
+        size_t len = end ? (size_t)(end - part) : strlen(part);
+        char candidate[1024];
+        if (len + strlen(cmd) + 2 <= sizeof(candidate)) {
+            if (len == 0) {
+                snprintf(candidate, sizeof(candidate), "./%s", cmd);
+            } else {
+                memcpy(candidate, part, len);
+                candidate[len] = '/';
+                snprintf(candidate + len + 1, sizeof(candidate) - len - 1, "%s", cmd);
+            }
+            if (access(candidate, X_OK) == 0) return 1;
+        }
+        if (!end) break;
+        part = end + 1;
+    }
+    return 0;
 }
 
 char *gcl_ide_native_dialog(int save, const char *initial_dir) {
     if (has_cmd("zenity")) {
-        char cmd[4096];
-        if (save) {
-            snprintf(cmd, sizeof(cmd), "zenity --file-selection --save --confirm-overwrite --filename=\"%s/\" 2>/dev/null",
-                     initial_dir ? initial_dir : ".");
-        } else {
-            snprintf(cmd, sizeof(cmd), "zenity --file-selection --filename=\"%s/\" 2>/dev/null",
-                     initial_dir ? initial_dir : ".");
-        }
-        char *r = run_capture(cmd);
+        char filename_arg[4096];
+        snprintf(filename_arg, sizeof(filename_arg), "--filename=%s/",
+                 initial_dir ? initial_dir : ".");
+        char *open_args[] = { "zenity", "--file-selection", filename_arg, NULL };
+        char *save_args[] = { "zenity", "--file-selection", "--save", "--confirm-overwrite", filename_arg, NULL };
+        char **args = save ? save_args : open_args;
+        char *r = run_capture(args);
         if (r && r[0]) return r;
         free(r);
     }
     if (has_cmd("kdialog")) {
-        char cmd[4096];
-        if (save) {
-            snprintf(cmd, sizeof(cmd), "kdialog --getsavefilename \"%s/\" \"*\" 2>/dev/null",
-                     initial_dir ? initial_dir : ".");
-        } else {
-            snprintf(cmd, sizeof(cmd), "kdialog --getopenfilename \"%s/\" \"*\" 2>/dev/null",
-                     initial_dir ? initial_dir : ".");
-        }
-        char *r = run_capture(cmd);
+        char dirname[4096];
+        snprintf(dirname, sizeof(dirname), "%s/", initial_dir ? initial_dir : ".");
+        char *open_args[] = { "kdialog", "--getopenfilename", dirname, "*", NULL };
+        char *save_args[] = { "kdialog", "--getsavefilename", dirname, "*", NULL };
+        char *r = run_capture(save ? save_args : open_args);
         if (r && r[0]) return r;
         free(r);
     }
@@ -151,11 +226,10 @@ char *gcl_ide_native_dialog(int save, const char *initial_dir) {
 }
 
 char *gcl_ide_native_dialog_folder(char *out, size_t outsz) {
-    (void)outsz;
+    if (!out || outsz == 0) return NULL;
     if (has_cmd("zenity")) {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "zenity --file-selection --directory 2>/dev/null");
-        char *r = run_capture(cmd);
+        char *args[] = { "zenity", "--file-selection", "--directory", NULL };
+        char *r = run_capture(args);
         if (r && r[0]) {
             snprintf(out, outsz, "%s", r);
             free(r);
@@ -164,9 +238,8 @@ char *gcl_ide_native_dialog_folder(char *out, size_t outsz) {
         free(r);
     }
     if (has_cmd("kdialog")) {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "kdialog --getexistingdirectory . 2>/dev/null");
-        char *r = run_capture(cmd);
+        char *args[] = { "kdialog", "--getexistingdirectory", ".", NULL };
+        char *r = run_capture(args);
         if (r && r[0]) {
             snprintf(out, outsz, "%s", r);
             free(r);

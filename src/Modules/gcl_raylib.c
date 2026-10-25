@@ -24,6 +24,7 @@
  */
 
 #include "gcl_module.h"
+#include "gcl_raylib_window.h"
 
 #include <raylib.h>
 /* rlGetVersion(): baglamin ACTIGI OpenGL surumu. Script bunu okuyup shader'in
@@ -1077,7 +1078,15 @@ static int glsl_version_probe(void) {
 }
 
 static double fn_InitWindow(int argc,const char**argv){
-    InitWindow(ii(argv[0]),ii(argv[1]),ss(argv[2]));
+    int result = gcl_raylib_window_init(ii(argv[0]), ii(argv[1]), ss(argv[2]));
+    if (result < 0) {
+        fprintf(stderr, "Raylib.InitWindow: a window is already open; close it before opening another\n");
+        return 0.0;
+    }
+    if (result == 0) {
+        fprintf(stderr, "Raylib.InitWindow: raylib could not initialize the window\n");
+        return 0.0;
+    }
     /* Baglam artik acik: surum SIMDI ve BIR KEZ olulur, sonra butun surec
        boyunca bu deger okunur. */
     g_glsl_version = glsl_version_probe();
@@ -1087,10 +1096,14 @@ static double fn_InitWindow(int argc,const char**argv){
    silinemez, ve unutulursa surucude sizinti kalir. */
 static double fn_CloseWindow(int argc,const char**argv){
     (void)argc;(void)argv;
-    GCL_NO_WINDOW(CloseWindow);
+    if (!IsWindowReady()) {
+        gcl_no_window_warn("CloseWindow");
+        return 0.0;
+    }
     { const RenderHooks *h = render_hooks();
       if (h && h->shutdown) h->shutdown(); }
-    CloseWindow();
+    (void)gcl_raylib_window_close();
+    g_glsl_version = 0;
     return 0.0;
 }
 static double fn_WindowShouldClose(int argc,const char**argv){(void)argc;(void)argv;return WindowShouldClose()?1.0:0.0;}

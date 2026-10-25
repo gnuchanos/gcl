@@ -3,6 +3,12 @@
 /* Project icon — default icon for new projects + build-time exe icon. */
 #include "gcl_icon.h"
 
+#ifndef _WIN32
+#include <errno.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #ifdef _WIN32
 /* windows.h's CloseWindow/ShowCursor functions clash with raylib.h.
    The same hiding technique is used in ide_proc.c. */
@@ -97,9 +103,16 @@ static void *build_thread_fn(void *arg) {
         }
 #else
         snprintf(dest, sizeof(dest), "%s/%s", ed->build_out_dir, ed->build_name);
-        char cp_cmd[8192];
-        snprintf(cp_cmd, sizeof(cp_cmd), "cp \"%s\" \"%s\"", src_exe, dest);
-        if (system(cp_cmd) == 0) {
+        pid_t copy_pid = fork();
+        int copy_status = -1;
+        if (copy_pid == 0) {
+            execlp("cp", "cp", src_exe, dest, (char *)NULL);
+            _exit(127);
+        }
+        if (copy_pid > 0) {
+            while (waitpid(copy_pid, &copy_status, 0) < 0 && errno == EINTR) {}
+        }
+        if (copy_pid > 0 && WIFEXITED(copy_status) && WEXITSTATUS(copy_status) == 0) {
             char ok[512];
             snprintf(ok, sizeof(ok), "Built: %s\n", dest);
             strncpy(ed->build_step, ok, sizeof(ed->build_step) - 1);

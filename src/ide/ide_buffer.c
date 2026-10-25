@@ -182,10 +182,21 @@ int gcl_ide_buffer_load(GclIdeBuffer *b, const char *path) {
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return -1; }
     rewind(f);
+    char *new_path = gcl_strdup(path);
+    if (!new_path) { fclose(f); return -1; }
     /* +1: null terminator için gereken alan — heap overflow önlenir */
-    if (ensure_cap(b, (size_t)sz + 1) != 0) { fclose(f); return -1; }
+    if (ensure_cap(b, (size_t)sz + 1) != 0) {
+        free(new_path);
+        fclose(f);
+        return -1;
+    }
     size_t rd = fread(b->content, 1, (size_t)sz, f);
+    int read_failed = ferror(f) || rd != (size_t)sz;
     fclose(f);
+    if (read_failed || memchr(b->content, '\0', rd) != NULL) {
+        free(new_path);
+        return -1;
+    }
     b->content[rd] = '\0';
     b->size = rd;
     b->cursor = 0;
@@ -196,14 +207,14 @@ int gcl_ide_buffer_load(GclIdeBuffer *b, const char *path) {
     b->undo_suspend = 0;   /* açık bir düzenleme grubu yeni dosyaya taşınmaz */
     b->undo_armed = 0;
     free(b->path);
-    b->path = gcl_strdup(path);
+    b->path = new_path;
     /* \r\n -> \n normalize */
     char *out = b->content;
     size_t o = 0;
     for (size_t i = 0; i < b->size; i++) {
         if (b->content[i] == '\r') {
             if (i + 1 < b->size && b->content[i + 1] == '\n') {
-                if (o == 0 || out[o - 1] != '\n') out[o++] = '\n';
+                out[o++] = '\n';
                 i++;
             } else {
                 out[o++] = '\n';
@@ -221,8 +232,9 @@ int gcl_ide_buffer_save(GclIdeBuffer *b) {
     if (!b->path) return -1;
     FILE *f = fopen(b->path, "wb");
     if (!f) return -1;
-    if (b->size > 0) fwrite(b->content, 1, b->size, f);
-    fclose(f);
+    int failed = (b->size > 0 && fwrite(b->content, 1, b->size, f) != b->size);
+    if (fclose(f) != 0) failed = 1;
+    if (failed) return -1;
     b->dirty = 0;
     return 0;
 }

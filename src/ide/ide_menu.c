@@ -87,15 +87,27 @@ void menu_action_run(Editor *ed, MenuAction a) {
         case MACT_SAVE: {
             GclIdeBuffer *b = &CURP;
             if (b->path && b->path[0]) {
-                gcl_ide_buffer_save(b);
+                if (gcl_ide_buffer_save(b) != 0) {
+                    snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not save file: %s", b->path);
+                    ed->warning_open = 1;
+                }
             } else {
                 char dir[2048];
                 editor_get_active_dir(ed, dir, sizeof(dir));
                 char *p = gcl_ide_native_dialog(1, dir);
                 if (p) {
-                    free(b->path);
-                    b->path = gcl_strdup(p);
-                    gcl_ide_buffer_save(b);
+                    char *new_path = gcl_strdup(p);
+                    if (!new_path) {
+                        snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not allocate file path");
+                        ed->warning_open = 1;
+                    } else {
+                        free(b->path);
+                        b->path = new_path;
+                        if (gcl_ide_buffer_save(b) != 0) {
+                            snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not save file: %s", b->path);
+                            ed->warning_open = 1;
+                        }
+                    }
                     free(p);
                 }
             }
@@ -107,9 +119,18 @@ void menu_action_run(Editor *ed, MenuAction a) {
             else editor_get_active_dir(ed, dir, sizeof(dir));
             char *p = gcl_ide_native_dialog(1, dir);
             if (p) {
-                free(b->path);
-                b->path = gcl_strdup(p);
-                gcl_ide_buffer_save(b);
+                char *new_path = gcl_strdup(p);
+                if (!new_path) {
+                    snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not allocate file path");
+                    ed->warning_open = 1;
+                } else {
+                    free(b->path);
+                    b->path = new_path;
+                    if (gcl_ide_buffer_save(b) != 0) {
+                        snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not save file: %s", b->path);
+                        ed->warning_open = 1;
+                    }
+                }
                 free(p);
                 tree_rescan(ed);
             }

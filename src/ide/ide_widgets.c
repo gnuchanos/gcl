@@ -348,8 +348,11 @@ void ctx_execute(Editor *ed) {
                 }
                 char dst[8192];
                 snprintf(dst, sizeof(dst), "%s/%s", parent, path_basename(ed->clipboard_path));
-                if (fs_is_dir(ed->clipboard_path)) fs_copy_dir_rec(ed->clipboard_path, dst);
-                else fs_copy_file(ed->clipboard_path, dst);
+                int copy_rc = fs_is_dir(ed->clipboard_path)
+                    ? fs_copy_dir_rec(ed->clipboard_path, dst)
+                    : fs_copy_file(ed->clipboard_path, dst);
+                if (copy_rc != 0)
+                    fprintf(stderr, "IDE: could not paste '%s' to '%s'\n", ed->clipboard_path, dst);
                 ed->last_tree_scan = 0;  /* deferred instead of synchronous tree_rescan */
             }
             ed->ctx_open = 0;

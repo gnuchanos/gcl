@@ -915,12 +915,31 @@ int gcl_ide_run(const char *path) {
             }
             if (ctrl && IsKeyPressed(KEY_S)) {
                 GclIdeBuffer *b = &CUR;
-                if (b->path) gcl_ide_buffer_save(b);
+                if (b->path) {
+                    if (gcl_ide_buffer_save(b) != 0) {
+                        snprintf(ed.warning_msg, sizeof(ed.warning_msg), "Could not save file: %s", b->path);
+                        ed.warning_open = 1;
+                    }
+                }
                 else {
                     char dir[2048];
                     editor_get_active_dir(&ed, dir, sizeof(dir));
                     char *p = gcl_ide_native_dialog(1, dir);
-                    if (p) { free(b->path); b->path = gcl_strdup(p); gcl_ide_buffer_save(b); free(p); }
+                    if (p) {
+                        char *new_path = gcl_strdup(p);
+                        if (!new_path) {
+                            snprintf(ed.warning_msg, sizeof(ed.warning_msg), "Could not allocate file path");
+                            ed.warning_open = 1;
+                        } else {
+                            free(b->path);
+                            b->path = new_path;
+                            if (gcl_ide_buffer_save(b) != 0) {
+                                snprintf(ed.warning_msg, sizeof(ed.warning_msg), "Could not save file: %s", b->path);
+                                ed.warning_open = 1;
+                            }
+                        }
+                        free(p);
+                    }
                 }
             }
             if (ctrl && IsKeyPressed(KEY_C)) editor_copy(&ed);
@@ -1113,8 +1132,9 @@ int gcl_ide_run(const char *path) {
                     const char *src = fpl.paths[i];
                     char dst[8192];
                     snprintf(dst, sizeof(dst), "%s/%s", ed.cwd, path_basename(src));
-                    if (fs_is_dir(src)) fs_copy_dir_rec(src, dst);
-                    else fs_copy_file(src, dst);
+                    int copy_rc = fs_is_dir(src) ? fs_copy_dir_rec(src, dst) : fs_copy_file(src, dst);
+                    if (copy_rc != 0)
+                        fprintf(stderr, "IDE: could not copy dropped path '%s' to '%s'\n", src, dst);
                 }
                 UnloadDroppedFiles(fpl);
                 ed.last_tree_scan = 0;  /* deferred rescan */
@@ -1599,8 +1619,21 @@ int gcl_ide_run(const char *path) {
     /* Terminate the still-running external process (Run/Project run) when the IDE closes */
     gcl_ide_proc_kill(&ed);
 
+    for (int i = 0; i < ed.tab_count; i++) gcl_ide_buffer_free(&ed.tabs[i]);
+    for (int i = 0; i < ed.split_right_tab_count; i++)
+        gcl_ide_buffer_free(&ed.split_right_tabs[i]);
     free(ed.tabs);
+    free(ed.split_right_tabs);
     free(ed.clip_text);
+    if (s_bg_texture.id > 0) UnloadTexture(s_bg_texture);
+    if (s_logo_texture.id > 0) UnloadTexture(s_logo_texture);
+    if (g_font.texture.id > 0) UnloadFont(g_font);
+    if (IsAudioDeviceReady()) {
+        if (ed.click_snd.frameCount > 0) UnloadSound(ed.click_snd);
+        if (ed.enter_snd.frameCount > 0) UnloadSound(ed.enter_snd);
+        if (ed.delete_snd.frameCount > 0) UnloadSound(ed.delete_snd);
+        CloseAudioDevice();
+    }
     CloseWindow();
     return 0;
 }

@@ -12,6 +12,7 @@
 
 #include <Python.h>
 #include <raylib.h>
+#include "gcl_raylib_window.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -54,7 +55,15 @@ static PyObject *py_init_window(PyObject *self, PyObject *args) {
     int w, h;
     const char *title;
     if (!PyArg_ParseTuple(args, "iis", &w, &h, &title)) return NULL;
-    InitWindow(w, h, title);
+    int result = gcl_raylib_window_init(w, h, title);
+    if (result < 0) {
+        PyErr_SetString(PyExc_RuntimeError, "a raylib window is already open");
+        return NULL;
+    }
+    if (result == 0) {
+        PyErr_SetString(PyExc_RuntimeError, "raylib could not initialize the window");
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 
@@ -66,7 +75,10 @@ static PyObject *py_window_should_close(PyObject *self, PyObject *args) {
 
 static PyObject *py_close_window(PyObject *self, PyObject *args) {
     (void)self; (void)args;
-    CloseWindow();
+    if (!gcl_raylib_window_close()) {
+        PyErr_SetString(PyExc_RuntimeError, "no raylib window is open");
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 

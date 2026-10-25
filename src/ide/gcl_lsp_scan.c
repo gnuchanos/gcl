@@ -216,14 +216,15 @@ static void scan_include(const char *line, size_t line_len, const char *workspac
         f = fopen(path, "rb");
     }
     if (!f) return;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
     long sz = ftell(f);
-    rewind(f);
-    if (sz <= 0) { fclose(f); return; }
+    if (sz <= 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }
     char *buf = (char *)malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return; }
     size_t rd = fread(buf, 1, (size_t)sz, f);
+    int read_failed = ferror(f) || rd != (size_t)sz;
     fclose(f);
+    if (read_failed) { free(buf); return; }
     buf[rd] = '\0';
     scan_text(buf, rd, path, workspace, depth + 1, out, count, cap);
     free(buf);

@@ -24,6 +24,12 @@ char **fs_list_dir(const char *dir, int *count) {
     int cap = 0;
     DIR *d = opendir(dir);
     if (!d) return NULL;
+    cap = 32;
+    entries = (char **)malloc(sizeof(char *) * (size_t)cap);
+    if (!entries) {
+        closedir(d);
+        return NULL;
+    }
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
@@ -33,11 +39,20 @@ char **fs_list_dir(const char *dir, int *count) {
             if (!ne) {
                 for (int i = 0; i < *count; i++) free(entries[i]);
                 free(entries);
+                closedir(d);
+                *count = 0;
                 return NULL;
             }
             entries = ne;
         }
         entries[*count] = gcl_strdup(de->d_name);
+        if (!entries[*count]) {
+            for (int i = 0; i < *count; i++) free(entries[i]);
+            free(entries);
+            closedir(d);
+            *count = 0;
+            return NULL;
+        }
         (*count)++;
     }
     closedir(d);
@@ -62,34 +77,43 @@ int fs_mkdir(const char *p) {
     return -1;
 }
 
-void fs_copy_file(const char *src, const char *dst) {
-    if (!src || !dst) return;
+int fs_copy_file(const char *src, const char *dst) {
+    if (!src || !dst) return -1;
     FILE *in = fopen(src, "rb");
-    if (!in) return;
+    if (!in) return -1;
     FILE *out = fopen(dst, "wb");
-    if (!out) { fclose(in); return; }
+    if (!out) { fclose(in); return -1; }
     char buf[8192];
     size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
-    fclose(in);
-    fclose(out);
+    int failed = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            failed = 1;
+            break;
+        }
+    }
+    if (ferror(in)) failed = 1;
+    if (fclose(in) != 0) failed = 1;
+    if (fclose(out) != 0) failed = 1;
+    return failed ? -1 : 0;
 }
 
-void fs_copy_dir_rec(const char *src, const char *dst) {
-    if (!src || !dst) return;
-    fs_mkdir(dst);
+int fs_copy_dir_rec(const char *src, const char *dst) {
+    if (!src || !dst || fs_mkdir(dst) != 0) return -1;
     int n = 0;
     char **e = fs_list_dir(src, &n);
-    if (!e) return;
+    if (!e) return -1;
+    int failed = 0;
     for (int i = 0; i < n; i++) {
         char sp[4096], dp[4096];
         snprintf(sp, sizeof(sp), "%s/%s", src, e[i]);
         snprintf(dp, sizeof(dp), "%s/%s", dst, e[i]);
-        if (fs_is_dir(sp)) fs_copy_dir_rec(sp, dp);
-        else fs_copy_file(sp, dp);
+        int rc = fs_is_dir(sp) ? fs_copy_dir_rec(sp, dp) : fs_copy_file(sp, dp);
+        if (rc != 0) failed = 1;
         free(e[i]);
     }
     free(e);
+    return failed ? -1 : 0;
 }
 
 void fs_remove_rec(const char *p) {
@@ -178,7 +202,12 @@ void tab_add_pane(Editor *ed, int pane, const char *path) {
     pane_tabs = (pane == 0) ? ed->tabs : ed->split_right_tabs;
     GclIdeBuffer *nb = &pane_tabs[*pane_count];
     gcl_ide_buffer_init(nb);
-    if (path && path[0]) gcl_ide_buffer_load(nb, path);
+    if (path && path[0] && gcl_ide_buffer_load(nb, path) != 0) {
+        snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not load file: %s", path);
+        ed->warning_open = 1;
+        gcl_ide_buffer_free(nb);
+        gcl_ide_buffer_init(nb);
+    }
     (*pane_count)++;
     int new_idx = *pane_count - 1;
     *pane_active = new_idx;
@@ -206,7 +235,12 @@ void tab_add(Editor *ed, const char *path) {
     ed->tabs = n;
     GclIdeBuffer *nb = &ed->tabs[ed->tab_count];
     gcl_ide_buffer_init(nb);
-    if (path && path[0]) gcl_ide_buffer_load(nb, path);
+    if (path && path[0] && gcl_ide_buffer_load(nb, path) != 0) {
+        snprintf(ed->warning_msg, sizeof(ed->warning_msg), "Could not load file: %s", path);
+        ed->warning_open = 1;
+        gcl_ide_buffer_free(nb);
+        gcl_ide_buffer_init(nb);
+    }
     ed->tab_count++;
     ed->active_tab = ed->tab_count - 1;
     ed->tabs[ed->active_tab].sel_anchor = ed->tabs[ed->active_tab].cursor;

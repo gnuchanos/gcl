@@ -14,6 +14,7 @@
 #include <lualib.h>
 
 #include <raylib.h>
+#include "gcl_raylib_window.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -62,7 +63,9 @@ static int l_init_window(lua_State *L) {
     int w = (int)luaL_checkinteger(L, 1);
     int h = (int)luaL_checkinteger(L, 2);
     const char *title = luaL_checkstring(L, 3);
-    InitWindow(w, h, title);
+    int result = gcl_raylib_window_init(w, h, title);
+    if (result < 0) return luaL_error(L, "a raylib window is already open");
+    if (result == 0) return luaL_error(L, "raylib could not initialize the window");
     return 0;
 }
 
@@ -72,7 +75,8 @@ static int l_window_should_close(lua_State *L) {
 }
 
 static int l_close_window(lua_State *L) {
-    CloseWindow();
+    if (!gcl_raylib_window_close())
+        return luaL_error(L, "no raylib window is open");
     return 0;
 }
 
