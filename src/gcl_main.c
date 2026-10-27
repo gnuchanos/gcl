@@ -882,6 +882,75 @@ static int build_project(const char *gcdata, const char *out_dir_arg) {
 }
 #endif /* GCL_SKIP_BUNDLE (build_project) */
 
+/* ---------- Python package manager (-pypip) ---------- */
+/* gcl -pypip install . | library_name | -e path
+   gcl -pypip remove library_name
+   Delegates to the system's pip (python -m pip), so a GCL project can install
+   the Python libraries its scripts import without leaving the gcl CLI. */
+static int pypip(int argc, char **argv) {
+    /* Map "remove" -> "uninstall" (pip's real command) for convenience. */
+    char *fixed_argv[16];
+    int fixed_argc = 0;
+    if (argc > 0 && fixed_argc < 16) {
+        if (strcmp(argv[0], "remove") == 0) {
+            fixed_argv[fixed_argc++] = "uninstall";
+        } else {
+            fixed_argv[fixed_argc++] = (char *)argv[0];
+        }
+    }
+    for (int i = 1; i < argc && fixed_argc < 16; i++) {
+        fixed_argv[fixed_argc++] = (char *)argv[i];
+    }
+
+    /* Build the command: python -m pip <args...> */
+    char cmd[4096];
+    size_t pos = 0;
+#ifdef _WIN32
+    pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "python -m pip ");
+#else
+    pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "python3 -m pip ");
+#endif
+    for (int i = 0; i < fixed_argc; i++) {
+        const char *a = fixed_argv[i];
+        /* Quote arguments that contain spaces. */
+        if (strchr(a, ' ') || strchr(a, '"')) {
+            pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "\"");
+            for (const char *c = a; *c && pos + 2 < sizeof(cmd); c++) {
+                if (*c == '"') pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "\\\"");
+                else pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "%c", *c);
+            }
+            pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "\"");
+        } else {
+            pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, "%s", a);
+        }
+        if (i + 1 < fixed_argc && pos + 2 < sizeof(cmd)) {
+            pos += (size_t)snprintf(cmd + pos, sizeof(cmd) - pos, " ");
+        }
+    }
+    cmd[sizeof(cmd) - 1] = '\0';
+
+#ifdef _WIN32
+    printf("> %s\n", cmd);
+    fflush(stdout);
+    return system(cmd);
+#else
+    printf("> %s\n", cmd);
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return 1; }
+    if (pid == 0) {
+        execlp("sh", "sh", "-c", cmd, (char *)NULL);
+        perror("sh");
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) { perror("waitpid"); return 1; }
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+#endif
+}
+
 /* ---------- Python HTTP host (-pyhost) ---------- */
 static int pyhost(const char *port_str) {
     char *end = NULL;
@@ -936,7 +1005,9 @@ static void usage(void) {
         "  gcl -pyrun file.py\n"
         "  gcl -build project.gcdata [-o dir]   (default: <project>/out)\n"
         "  gcl -new path [--lua] [--luaraylib] [--python] [--pyraylib]\n"
-        "  gcl -pyhost <port>\n");
+        "  gcl -pyhost <port>\n"
+        "  gcl -pypip install . | library_name\n"
+        "  gcl -pypip remove library_name\n");
 }
 
 int main(int argc, char **argv) {
@@ -1041,6 +1112,9 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "-pyhost") == 0 && argc >= 3) {
         return pyhost(argv[2]);
+    }
+    if (strcmp(argv[1], "-pypip") == 0 && argc >= 3) {
+        return pypip(argc - 2, argv + 2);
     }
     /* "language ..." — simple_doc.md: gcl language <dirs> → build (delegates to makefile.py) */
     if (strcmp(argv[1], "language") == 0) {
