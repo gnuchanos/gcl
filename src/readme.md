@@ -17,14 +17,14 @@ Source files use the `.gcsf` extension.
 
 ## Running it
 
-The build chain lives in `language/makefile.py`. One command does everything:
+The build chain lives in `src/makefile.py`. From the repository root, run:
 
 ```
-gcl language
+python3 src/makefile.py
 ```
 
 That pulls the dependencies into `_temp/<os>/` (Lua, the Python embed, Raylib, Raygui,
-FreeFont) and produces this tree under `language/build/<os>/`:
+FreeFont) and produces this tree under `_temp/language-build/<os>/`:
 
 ```
 build/<os>/

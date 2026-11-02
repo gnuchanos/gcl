@@ -3,9 +3,9 @@
 GCL build chain (C version).
 
 Usage:
-  py.exe language/makefile.py            # deps + build + headless test layers
-  py.exe language/makefile.py raylib     # deps + build + WINDOW (raylib/raygui) tests
-  py.exe language/makefile.py all        # both
+  py.exe src/makefile.py            # deps + build + headless test layers
+  py.exe src/makefile.py raylib     # deps + build + WINDOW (raylib/raygui) tests
+  py.exe src/makefile.py all        # both
 
 The build is always done first. `raylib` is a SEPARATE target because its cases
 load Library/Raylib.dll and Library/Raygui.dll and one of them opens a real
@@ -264,12 +264,8 @@ SIMPLE_MODULES = [
 ]
 
 # ---------- Başlıksız (headless) regresyon testleri ----------
-# İki test de düz C programıdır ve derleyici-nötr katmanları DOĞRUDAN çağırır
-# (lexer/parser, ve "SMART" tamamlama motoru); raylib link etmezler, bu yüzden
-# pencere açmadan saniyeler içinde koşarlar. Her DERLEMEDE çalıştırılırlar:
-# bu katmanlardaki bir gerileme, IDE'de "yanlış öneri" olarak görünmeden ÖNCE
-# burada yakalanır. Elle derleme satırları eskiden yalnızca test dosyalarının
-# başlık yorumunda duruyordu ve sessizce eskiyebiliyordu.
+# C testleri raylib link etmeden koşar; parser/completion kaynakları henüz
+# bu checkout'ta yoktur. Shared-state regresyonu doğrudan mevcut başlığı test eder.
 PARSER_TEST_SRCS = [
     "language/tests/parser/test_parser.c",
     "language/_SRC/SharedPipeline/gcl_lexer.c",
@@ -293,6 +289,8 @@ COMPLETE_TEST_SRCS = [
     "language/_SRC/complete/complete_index.c",
     "language/_SRC/complete/complete_diag.c",
 ]
+
+SHARED_STATE_TEST_SRCS = ["src/tests/test_shared_state.c"]
 
 
 def exe_name() -> str:
@@ -589,6 +587,14 @@ def find_python_dir() -> Path:
         inc = _py_include_dir(d)
         if not (d.exists() and (inc / "Python.h").exists()):
             continue
+        if plat == "gnuLinux":
+            # A partial extract can still have Python.h and libpython, but
+            # CPython cannot start without the encodings package. Reject it
+            # here so clone_python_embed() repairs rather than reusing it.
+            stdlib = d / "lib" / "python3.14"
+            if not ((stdlib / "encodings" / "__init__.py").is_file() or
+                    (d / "lib" / "python314.zip").is_file()):
+                continue
         if plat == "windows":
             # Windows embed: libs/python*.lib veya python*.dll
             if list(d.glob("libs/python*.lib")) or list(d.glob("python*.dll")):
@@ -1727,8 +1733,8 @@ def build_gcl() -> Path:
     return build_dir
 
 
-def run_test_suite(name: str, sources: list[str], include_dir: str) -> bool:
-    """Bir başlıksız test paketini derle ve koş. Başarıda True.
+def run_test_suite(name: str, sources: list[str], include_dir: str) -> bool | None:
+    """Bir başlıksız test paketini derle ve koş. Başarıda True, yoksa None.
 
     Derleme/koşma hataları AÇIK olarak raporlanır: derlenemeyen bir test
     sessizce "her şey yolunda" gibi görünmemelidir. Çalışma dizini repo
@@ -1751,7 +1757,7 @@ def run_test_suite(name: str, sources: list[str], include_dir: str) -> bool:
     if missing:
         print(f"[gcl] uyarı: test atlandı ({name}) — eksik kaynak: "
               f"{', '.join(missing)}", file=sys.stderr, flush=True)
-        return True
+        return None
 
     # İkili ile test fixture'ları AYRI ağaçlarda kalmalı — bkz. docstring.
     bin_dir = TEMP_ROOT / "tests"
@@ -1780,7 +1786,7 @@ def run_test_suite(name: str, sources: list[str], include_dir: str) -> bool:
     return True
 
 
-def run_gcsf_suite() -> bool:
+def run_gcsf_suite() -> bool | None:
     """language/tests/run_gcsf_tests.py — dil seviyesi golden testler.
 
     ptest/ctest (lexer/parser ve tamamlama motoru) DERLEME ZAMANI birim
@@ -1796,7 +1802,7 @@ def run_gcsf_suite() -> bool:
     if not script.exists():
         print(f"[gcl] uyarı: gcsf test paketi yok, atlandı: {script}",
               file=sys.stderr, flush=True)
-        return True
+        return None
     print("[gcl] test: gcsf", flush=True)
     # --strict-assertions: bir vaka HİÇBİR sidecar'a sahip değilse (yalnızca
     # exit kodu karşılaştırılıyorsa) bu bir HATA sayılır. TURN 21 ve TURN 23'ün
@@ -1811,7 +1817,7 @@ def run_gcsf_suite() -> bool:
     return True
 
 
-def run_raylib_suite() -> bool:
+def run_raylib_suite() -> bool | None:
     """language/tests/run_raylib_tests.py — modül/pencere testleri.
 
     gcsf paketinden AYRI bir hedeftir (`makefile.py raylib`). Bu vakalar
@@ -1824,7 +1830,7 @@ def run_raylib_suite() -> bool:
     if not script.exists():
         print(f"[gcl] uyarı: raylib test paketi yok, atlandı: {script}",
               file=sys.stderr, flush=True)
-        return True
+        return None
     print("[gcl] test: raylib (pencere/modül)", flush=True)
     result = subprocess.run([sys.executable, str(script)], cwd=REPO_ROOT, check=False)
     if result.returncode != 0:
@@ -1835,15 +1841,45 @@ def run_raylib_suite() -> bool:
 
 # ---------- Hedefler (argv) ----------
 # Varsayılan yalnızca başlıksız katmanları koşar; pencere testleri AÇIKÇA
-# istenir. Böylece `py.exe language/makefile.py` her makinede yeşil kalır.
+# istenir. Böylece `py.exe src/makefile.py` her makinede yeşil kalır.
 TARGET_DEFAULT = "default"
 TARGET_RAYLIB = "raylib"
 TARGET_ALL = "all"
 KNOWN_TARGETS = (TARGET_DEFAULT, TARGET_RAYLIB, TARGET_ALL)
 
 
-def run_headless_layers() -> list[tuple[str, bool]]:
-    """ptest + ctest + gcsf. Üçü de derlemeden sonra, hep birlikte koşar.
+def run_embed_smoke(build_dir: Path, runtime: str) -> bool:
+    """Run a small script and check output from an embedded runtime."""
+    scripts = {
+        "lua": ("-luarun", REPO_ROOT / "examples" / "lua_example.lua"),
+        "python": ("-pyrun", REPO_ROOT / "examples" / "python_example.py"),
+    }
+    if runtime not in scripts:
+        raise ValueError(f"unknown embedded runtime: {runtime}")
+    option, script = scripts[runtime]
+    exe = build_dir / exe_name()
+    try:
+        result = subprocess.run(
+            [str(exe), option, str(script)],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30, check=False)
+    except subprocess.TimeoutExpired:
+        print(f"[gcl] ERROR: {runtime} smoke test timed out", file=sys.stderr, flush=True)
+        return False
+    if (result.returncode == 0 and "char: A" in result.stdout and
+            "unsigned int: 42" in result.stdout):
+        return True
+    print(f"[gcl] ERROR: {runtime} smoke test failed (exit={result.returncode})",
+          file=sys.stderr, flush=True)
+    if result.stdout:
+        print(result.stdout, file=sys.stderr, end="", flush=True)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="", flush=True)
+    return False
+
+
+def run_headless_layers(build_dir: Path) -> list[tuple[str, bool | None]]:
+    """Run headless parser, completion, state, embedding, and language checks.
 
     TURN 28 — her katman ADIYLA dondurulur: main() artik tek satirlik bir ozet
     basiyor ve adsiz bir sonuc listesi ozette okunamaz.
@@ -1851,9 +1887,10 @@ def run_headless_layers() -> list[tuple[str, bool]]:
     return [
         ("ptest", run_test_suite("ptest", PARSER_TEST_SRCS, "language/_SRC/SharedPipeline")),
         ("ctest", run_test_suite("ctest", COMPLETE_TEST_SRCS, "language/_SRC/complete")),
-        # Dil seviyesi golden testler: gercek gcl.exe'yi kosar. Diger ikisi
-        # derleme-zamani birim testleri oldugu icin bu ucuncu katman, "API
-        # dogru ama dil yanlis davraniyor" sinifini yakalar.
+        ("shared_state", run_test_suite("shared_state", SHARED_STATE_TEST_SRCS, "src/embed")),
+        ("lua_embed", run_embed_smoke(build_dir, "lua")),
+        ("python_embed", run_embed_smoke(build_dir, "python")),
+        # Dil seviyesi golden testler gerçek gcl.exe'yi çalıştırır.
         ("gcsf", run_gcsf_suite()),
     ]
 
@@ -1866,46 +1903,58 @@ def run_headless_layers() -> list[tuple[str, bool]]:
 # A reader had no way to tell "no failures" from "not executed". The SKIPPED
 # line below closes that gap by naming what did not run, and by printing the
 # exact command that runs it.
-ALL_LAYER_NAMES = ("ptest", "ctest", "gcsf", "raylib")
+ALL_LAYER_NAMES = ("ptest", "ctest", "shared_state", "lua_embed",
+                   "python_embed", "gcsf", "raylib")
 
 # The window package is the only layer that needs a screen; when it is the one
 # that was skipped the hint has to say so, otherwise "run: ... all" invites the
 # reader to re-run the three layers they just watched pass.
-HEADLESS_LAYER_NAMES = ("ptest", "ctest", "gcsf")
+HEADLESS_LAYER_NAMES = ("ptest", "ctest", "shared_state", "lua_embed",
+                        "python_embed", "gcsf")
 
 
-def print_suite_summary(results: list[tuple[str, bool]],
+def print_suite_summary(results: list[tuple[str, bool | None]],
                         skipped: tuple[str, ...] = ()) -> bool:
-    """Print ONE summary line for the layer results; return whether all passed.
+    """Print one summary line; return false only when an executed layer fails.
 
     TURN 28 — split out of main() so it can be exercised DIRECTLY, without a
     full rebuild: the value of the line is that it renders FAIL loudly, and a
     claim like that has to be shown, not asserted.
 
-        py.exe -c "import sys; sys.path.insert(0,'language'); import makefile as m; \
+        py.exe -c "import sys; sys.path.insert(0,'src'); import makefile as m; \
                    m.print_suite_summary([('ptest',True),('gcsf',False)])"
     """
-    summary = " | ".join(
-        f"{name} {'PASS' if ok else 'FAIL'}" for name, ok in results
-    )
+    status = {True: "PASS", False: "FAIL", None: "SKIPPED"}
+    summary = " | ".join(f"{name} {status[ok]}" for name, ok in results)
     print(f"[gcl] SUITE: {summary}", flush=True)
 
     # TURN 29 - say what did NOT run. Printed even when every layer passed,
     # because that is exactly the case where the omission used to be invisible.
     if skipped:
-        rerun = ("py.exe language/makefile.py raylib"
+        rerun = ("py.exe src/makefile.py raylib"
                  if tuple(skipped) == ("raylib",)
-                 else "py.exe language/makefile.py all")
+                 else "py.exe src/makefile.py all")
         print(f"[gcl] SKIPPED: {' '.join(skipped)} (not run by this target) - "
               f"to run them: {rerun}", flush=True)
 
-    if all(ok for _, ok in results):
+    unavailable = tuple(name for name, ok in results if ok is None)
+    if unavailable:
+        print(f"[gcl] SKIPPED: {' '.join(unavailable)} (test sources unavailable)",
+              flush=True)
+
+    if any(ok is False for _, ok in results):
+        print("[gcl] RESULT: FAILED - a FAIL above names the layer; that layer "
+              "printed its own ERROR line earlier in the log",
+              file=sys.stderr, flush=True)
+        return False
+    if unavailable:
+        print("[gcl] RESULT: build succeeded; test coverage incomplete", flush=True)
+        return True
+    if all(ok is True for _, ok in results):
         print("[gcl] RESULT: all layers passed", flush=True)
         return True
-    print("[gcl] RESULT: FAILED - a FAIL above names the layer; that layer "
-          "printed its own ERROR line earlier in the log",
-          file=sys.stderr, flush=True)
-    return False
+    print("[gcl] RESULT: no test layers ran", flush=True)
+    return True
 
 
 def _sudo_user_home() -> Path | None:
@@ -2378,7 +2427,7 @@ def main() -> int:
     # sonucunu bildirsin.
     results: list[tuple[str, bool]] = []
     if target in (TARGET_DEFAULT, TARGET_ALL):
-        results += run_headless_layers()
+        results += run_headless_layers(build_dir)
     if target in (TARGET_RAYLIB, TARGET_ALL):
         results.append(("raylib", run_raylib_suite()))
 

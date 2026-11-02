@@ -664,7 +664,11 @@ int gcl_py_run_file(const char *path) {
         }
     }
 
-    rc = gcl_py_run_simple(buf) ? 0 : 1;
+    int script_ok = gcl_py_run_simple(buf);
+    int flush_ok = g_api.run_simple_string(
+        "__import__('sys').stdout.flush(); __import__('sys').stderr.flush()") == 0;
+    if (!flush_ok) g_api.err_clear();
+    rc = script_ok && flush_ok ? 0 : 1;
     free(buf);
     gcl_shared_cleanup();
 

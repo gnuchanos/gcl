@@ -950,7 +950,7 @@ The build chain is `src/makefile.py`.
 
 ```
 cd src
-python3 makefile.py            # deps + build + headless tests (ptest, ctest, gcsf)
+python3 makefile.py            # deps + build + headless tests
 python3 makefile.py raylib     # deps + build + the window/module tests (needs a display)
 python3 makefile.py all        # both
 python3 makefile.py install    # build and install so `gcl` is on PATH
@@ -980,18 +980,9 @@ Lua and Python runtimes are loaded out of `Library/Embed`, so neither inflates
 the CLI binary. The IDE is a raylib program; it opens its own raylib window,
 which on this platform is an X11 window through GLFW.
 
-One build detail worth writing down, because it looks like a bug when you first
-see it: the sources really sit directly under `src/`, but the makefile still
-refers to them as `_SRC/...` — a leftover from when this tree lived inside the
-GnuchanOS repository. A single relative symlink, `src/_SRC -> .`, makes every
-one of those paths resolve to the sources beside it. `GnuChanPrograms.sh` in the
-GnuchanOS repository creates that link before building, and so does the CI
-workflow; if you build by hand from a fresh clone, create it yourself:
-
-```
-ln -sfn . src/_SRC            # Linux
-mklink /J src\_SRC src        # Windows (cmd), a junction needs no elevation
-```
+The build source lists retain the historical `_SRC/...` prefix, but the
+makefile removes that prefix before invoking the compiler. No `_SRC` symlink or
+junction is required in a fresh checkout.
 
 ## Continuous integration
 
@@ -1000,11 +991,8 @@ mklink /J src\_SRC src        # Windows (cmd), a junction needs no elevation
 Actions tab. It produces one artifact per platform: the whole output tree —
 `gcl`, `Library/` with every module, `Programs/ide`, `Assets/`.
 
-Two things in it are worth knowing, because they are the things that break a
-build on a fresh machine:
+One thing in it is worth knowing, because it breaks a build on a fresh machine:
 
-- **The `src/_SRC` link above is made in the workflow**, per platform — a
-  symlink on Linux, a junction on Windows.
 - **Windows runs under the native Python**, not an MSYS one, because the
   makefile asks `platform.system()` what it is building for and only a native
   interpreter answers `Windows`. The MinGW toolchain (`gcc`, `mingw32-make`,
@@ -1015,11 +1003,11 @@ The workflow caches `_temp/<os>/` — the downloaded Lua, CPython, Raylib and
 FreeFont — so a push that only touches a C source does not re-fetch all of it.
 Bump the `-v1` suffix on the cache key to force a clean fetch.
 
-The headless test layers (`ptest`, `ctest`, `gcsf`) read `language/tests/` and
-`language/_SRC/`, which this repository does not carry, so the build reports
-"test skipped" for each and carries on. The build itself — every module
-compiling and linking — is the pass/fail signal in CI until the test data is
-moved into this repository.
+The parser, completion, and language-golden test layers still reference
+`language/tests/` and `language/_SRC/`, which this repository does not carry.
+They are reported as `SKIPPED`, not `PASS`; a successful build with any skipped
+layers exits successfully but reports incomplete test coverage. The shared-state
+regression test and Lua/Python output smoke tests run in the headless target.
 
 ## Releasing
 

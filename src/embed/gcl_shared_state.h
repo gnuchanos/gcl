@@ -140,7 +140,7 @@ static void gcl_shared_unlock(void) {
 
 static int gcl_shared_set(const char *key, const char *val) {
     gcl_shared_init();
-    if (!g_gcl_shm || !key) return 0;
+    if (!g_gcl_shm || !key || strlen(key) >= GCL_SHM_KEY_LEN) return 0;
     gcl_shared_lock();
     int slot = -1, free_slot = -1;
     for (int i = 0; i < GCL_SHM_MAX_KEYS; i++) {
@@ -169,7 +169,8 @@ static int gcl_shared_set(const char *key, const char *val) {
 
 static int gcl_shared_get(const char *key, char *out, size_t out_size) {
     gcl_shared_init();
-    if (!g_gcl_shm || !key || !out || out_size == 0) return 0;
+    if (!g_gcl_shm || !key || strlen(key) >= GCL_SHM_KEY_LEN ||
+        !out || out_size == 0) return 0;
     gcl_shared_lock();
     int found = 0;
     for (int i = 0; i < GCL_SHM_MAX_KEYS; i++) {
